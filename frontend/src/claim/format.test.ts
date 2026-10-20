@@ -9,6 +9,11 @@ describe('formatValue', () => {
     expect(formatValue('injuries', false)).toBe('No')
   })
 
+  it('writes current plates with a space and leaves other plates alone', () => {
+    expect(formatValue('plate', '8305HJT')).toBe('8305 HJT')
+    expect(formatValue('other_vehicle_plate', 'M1234AB')).toBe('M1234AB')
+  })
+
   it('translates the loss type', () => {
     expect(formatValue('loss_type', 'broken_glass')).toBe('Rotura de lunas')
   })

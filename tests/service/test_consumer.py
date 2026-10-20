@@ -89,7 +89,7 @@ async def test_text_turn_without_audio(llm, policies, tts):
     fields = {f["name"]: f for f in events[1]["claim"]["fields"]}
     assert fields["policy_number"]["state"] == "valid"
     assert fields["plate"]["state"] == "invalid"
-    assert "does not match" in fields["plate"]["error"]
+    assert fields["plate"]["error"] == "No coincide con la matrícula de la póliza AUT-48213907"
     assert len(tts.spoken) == 1  # only the greeting was spoken
     assert await communicator.receive_nothing()
     await communicator.disconnect()
@@ -228,4 +228,18 @@ async def test_a_broker_outage_does_not_break_the_confirmation(llm, policies, mo
     assert events[-1]["claim"]["status"] == "confirmed"
     await communicator.send_json_to({"type": "text", "text": "Gracias"})
     assert (await communicator.receive_json_from(timeout=5))["type"] == "bot_message"
+    await communicator.disconnect()
+
+
+async def test_safety_advice_is_flagged_as_an_alert(llm):
+    communicator, _ = await started_conversation()
+    llm.then(call(UPDATE_CLAIM, {"injuries": True}), say("Lo siento. ¿Dónde ocurrió?"))
+
+    await communicator.send_json_to({"type": "text", "text": "Mi hija está herida"})
+    events = await receive_until(communicator, "claim_updated")
+
+    assert [(e["text"][:30], e["alert"]) for e in events[:2]] == [
+        (templates.emergency_advice().text[:30], True),
+        ("Lo siento. ¿Dónde ocurrió?", False),
+    ]
     await communicator.disconnect()

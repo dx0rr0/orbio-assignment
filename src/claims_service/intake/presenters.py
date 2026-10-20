@@ -4,6 +4,7 @@ from typing import Any
 
 from claims_agent.domain import Claim, Conversation, Role
 from claims_agent.engine import BotMessage
+from claims_service.intake.error_messages import display_error
 
 
 def claim_view(claim: Claim) -> dict[str, Any]:
@@ -15,7 +16,7 @@ def claim_view(claim: Claim) -> dict[str, Any]:
         if value is not None:
             state, error = "valid", None
         elif name in claim.field_errors:
-            state, error = "invalid", claim.field_errors[name]
+            state, error = "invalid", display_error(claim.field_errors[name])
         else:
             state, error = "empty", None
         fields.append({"name": name, "state": state, "value": value, "error": error})
@@ -24,7 +25,13 @@ def claim_view(claim: Claim) -> dict[str, Any]:
         "urgency": claim.urgency.value if claim.urgency else None,
         "reference": claim.reference,
         "closure_reason": claim.closure_reason.value if claim.closure_reason else None,
-        "pending_fields": data["pending_fields"],
+        "pending_fields": [
+            {
+                "field": pending.field,
+                "last_error": display_error(pending.last_error) if pending.last_error else None,
+            }
+            for pending in claim.pending_fields
+        ],
         "fields": fields,
     }
 
@@ -48,7 +55,7 @@ def conversation_view(conversation: Conversation) -> dict[str, Any]:
 
 
 def bot_message_event(reply: BotMessage) -> dict[str, Any]:
-    return {"type": "bot_message", "text": reply.text}
+    return {"type": "bot_message", "text": reply.text, "alert": reply.alert}
 
 
 def claim_updated_event(conversation: Conversation) -> dict[str, Any]:

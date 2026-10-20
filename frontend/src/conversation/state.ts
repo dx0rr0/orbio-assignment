@@ -5,6 +5,8 @@ export type Connection = 'connecting' | 'open' | 'closed'
 export interface ConversationState {
   connection: Connection
   conversationId: string | null
+  /** When the conversation started, in epoch milliseconds. */
+  startedAt: number | null
   transcript: TranscriptEntry[]
   claim: ClaimView | null
   summary: Summary | null
@@ -21,6 +23,7 @@ export type Action =
 export const initialState: ConversationState = {
   connection: 'connecting',
   conversationId: null,
+  startedAt: null,
   transcript: [],
   claim: null,
   summary: null,
@@ -50,11 +53,12 @@ export function reducer(state: ConversationState, action: Action): ConversationS
 function onServerEvent(state: ConversationState, event: ServerEvent): ConversationState {
   switch (event.type) {
     case 'conversation_started':
-      return { ...state, conversationId: event.conversation_id }
+      return { ...state, conversationId: event.conversation_id, startedAt: Date.now() }
     case 'snapshot':
       return {
         ...state,
         conversationId: event.conversation.id,
+        startedAt: Date.parse(event.conversation.created_at),
         transcript: event.conversation.transcript,
         claim: event.conversation.claim,
         summary: event.conversation.summary,
@@ -68,7 +72,10 @@ function onServerEvent(state: ConversationState, event: ServerEvent): Conversati
         ],
       }
     case 'bot_message':
-      return { ...state, transcript: [...state.transcript, { role: 'agent', text: event.text }] }
+      return {
+        ...state,
+        transcript: [...state.transcript, { role: 'agent', text: event.text, alert: event.alert }],
+      }
     case 'claim_updated':
       return { ...state, claim: event.claim, summary: event.summary, awaitingReply: false }
     case 'audio':

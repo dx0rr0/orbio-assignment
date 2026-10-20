@@ -14,3 +14,6 @@ Core Engineer Case.pdf
 tests-audios/
 spike/
 evals/report.json
+
+# Throwaway design prototypes (published as an artifact)
+.design-prototypes/

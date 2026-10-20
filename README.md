@@ -13,7 +13,7 @@ cp .env.example .env      # then set OPENROUTER_API_KEY (and the LANGFUSE_* keys
 docker compose up --build
 ```
 
-Open <http://localhost:8080>, allow the microphone and hold the button to talk. Add `?dev` to the URL to get a text box as well (handy without a microphone); `?conversation=<id>` reopens an existing conversation.
+Open <http://localhost:8080>, allow the microphone and hold the button (or the space bar) to talk. The page looks like a call in progress: the whole conversation, with the agent's current words shown large, and on the right the claim as stages (identification, driver, what/when/where, damage, other vehicle or police report, confirmation) that fill in as you speak, with validation errors in Spanish. Add `?dev` to the URL to get a text box as well (handy without a microphone); `?conversation=<id>` reopens an existing conversation.
 
 Five demo policies are seeded, with dates relative to today, one per scenario:
 
@@ -66,7 +66,7 @@ cd frontend && npm ci && npm test && npm run lint
 | `tests/service` | Postgres repository (versioning, concurrent reference numbers), WebSocket protocol, API, Celery tasks. |
 | `tests/e2e` | Recorded Spanish utterances (`tests/e2e/fixtures/audio`) through nginx, STT, LLM and TTS. The final claim is checked. |
 | `evals/` | Six scenarios where an LLM plays the declarant (happy path, another driver with injuries, expired policy, loss before the policy started, insisting on a wrong plate, refusing to give a name). |
-| `frontend` | WAV encoding, conversation state reducer and value formatting (vitest). |
+| `frontend` | WAV encoding, conversation state, claim stages and value formatting (vitest). |
 
 GitHub Actions runs lint and the non-e2e tests for both the backend (with a Postgres service) and the frontend.
 

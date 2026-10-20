@@ -69,10 +69,18 @@ interface LossLocation {
   country: string
 }
 
+/** Current Spanish plates ('8305HJT') are written '8305 HJT'; others stay as they are. */
+export function displayPlate(plate: string): string {
+  return /^\d{4}[A-Z]{3}$/.test(plate) ? `${plate.slice(0, 4)} ${plate.slice(4)}` : plate
+}
+
 export function formatValue(name: string, value: unknown): string {
   if (value === null || value === undefined) return '—'
   if (typeof value === 'boolean') return value ? 'Sí' : 'No'
   switch (name) {
+    case 'plate':
+    case 'other_vehicle_plate':
+      return displayPlate(String(value))
     case 'loss_type':
       return LOSS_TYPES[value as string] ?? String(value)
     case 'loss_window': {

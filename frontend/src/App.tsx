@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 
+import { type AgentActivity, CallHeader } from './components/CallHeader'
 import { ClaimPanel } from './components/ClaimPanel'
 import { TalkButton } from './components/TalkButton'
 import { Transcript } from './components/Transcript'
@@ -13,13 +14,27 @@ const devMode = params.has('dev')
 
 export default function App() {
   const player = useRef<HTMLAudioElement | null>(null)
+  const [speaking, setSpeaking] = useState(false)
+  const [recording, setRecording] = useState(false)
+
+  const stopSpeaking = useCallback(() => {
+    player.current?.pause()
+    setSpeaking(false)
+  }, [])
+
   const playAudio = useCallback((wav: Blob) => {
     player.current?.pause()
     const url = URL.createObjectURL(wav)
     const audio = new Audio(url)
-    audio.onended = () => URL.revokeObjectURL(url)
+    const done = () => {
+      URL.revokeObjectURL(url)
+      if (player.current === audio) setSpeaking(false)
+    }
+    audio.onended = done
+    audio.onpause = done
     player.current = audio
-    audio.play().catch(() => URL.revokeObjectURL(url)) // autoplay may be blocked
+    setSpeaking(true)
+    audio.play().catch(done) // autoplay may be blocked
   }, [])
 
   const { state, sendAudio, sendText } = useConversation(resumeId, playAudio)
@@ -27,21 +42,27 @@ export default function App() {
   const [draft, setDraft] = useState('')
 
   const closed = isClosed(state.claim)
-  const canSpeak = state.connection === 'open' && !state.awaitingReply && !closed
+  const connected = state.connection === 'open'
+  const canSpeak = connected && !state.awaitingReply && !closed
+  const activity: AgentActivity = recording
+    ? 'listening'
+    : state.awaitingReply
+      ? 'thinking'
+      : speaking
+        ? 'speaking'
+        : 'waiting'
 
   return (
     <div className="layout">
-      <main className="conversation">
-        <header>
-          <h1>Declaración de siniestro</h1>
-          {state.connection !== 'open' && (
-            <span className="connection">
-              {state.connection === 'connecting' ? 'Conectando…' : 'Desconectado'}
-            </span>
-          )}
-        </header>
+      <main className="call">
+        <CallHeader
+          connected={connected}
+          ended={closed || state.connection === 'closed'}
+          startedAt={state.startedAt}
+          activity={activity}
+        />
 
-        <Transcript entries={state.transcript} typing={state.awaitingReply} />
+        <Transcript entries={state.transcript} thinking={state.awaitingReply} />
 
         {(state.error || micError) && <p className="error">{state.error ?? micError}</p>}
 
@@ -53,8 +74,11 @@ export default function App() {
           ) : (
             <TalkButton
               disabled={!canSpeak}
+              onRecordingChange={(value) => {
+                setRecording(value)
+                if (value) stopSpeaking() // talking over the agent interrupts it
+              }}
               onUtterance={(wav) => {
-                player.current?.pause()
                 setMicError(null)
                 sendAudio(wav)
               }}
@@ -67,11 +91,16 @@ export default function App() {
               onSubmit={(e) => {
                 e.preventDefault()
                 if (!draft.trim()) return
+                stopSpeaking()
                 sendText(draft, true)
                 setDraft('')
               }}
             >
+              <label htmlFor="dev-text" className="visually-hidden">
+                Escribir en lugar de hablar
+              </label>
               <input
+                id="dev-text"
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 placeholder="Escribir en lugar de hablar (modo desarrollo)"

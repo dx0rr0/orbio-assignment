@@ -40,6 +40,8 @@ class BotMessage:
     speech: str | None = None
     # False only for replies written by the LLM.
     scripted: bool = True
+    # Safety advice the interface should make stand out.
+    alert: bool = False
 
     @property
     def spoken(self) -> str:
@@ -126,7 +128,8 @@ def technical_problem() -> BotMessage:
 def emergency_advice() -> BotMessage:
     return BotMessage(
         "Si hay alguien herido y necesita atención, llame ahora al 112. "
-        "Cuando pueda, seguimos con la declaración."
+        "Cuando pueda, seguimos con la declaración.",
+        alert=True,
     )
 
 

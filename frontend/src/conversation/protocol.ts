@@ -27,6 +27,8 @@ export interface Summary {
 export interface TranscriptEntry {
   role: 'declarant' | 'agent'
   text: string
+  /** Safety advice to make stand out (only known for messages received live). */
+  alert?: boolean
 }
 
 export type ServerEvent =
@@ -35,13 +37,14 @@ export type ServerEvent =
       type: 'snapshot'
       conversation: {
         id: string
+        created_at: string
         claim: ClaimView
         summary: Summary | null
         transcript: TranscriptEntry[]
       }
     }
   | { type: 'transcript'; text: string }
-  | { type: 'bot_message'; text: string }
+  | { type: 'bot_message'; text: string; alert: boolean }
   | { type: 'claim_updated'; claim: ClaimView; summary: Summary | null }
   | { type: 'audio'; mime: string; data: string }
   | { type: 'error'; message: string }

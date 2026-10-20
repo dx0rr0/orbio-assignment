@@ -36,14 +36,17 @@ describe('reducer', () => {
 
   it('stops waiting when the claim update closes the turn', () => {
     let state = reducer(initialState, { type: 'sent', text: 'Hola' })
-    state = reducer(state, { type: 'server', event: { type: 'bot_message', text: '¿Póliza?' } })
+    state = reducer(state, { type: 'server', event: { type: 'bot_message', text: '¿Póliza?', alert: false } })
     expect(state.awaitingReply).toBe(true)
     state = reducer(state, {
       type: 'server',
       event: { type: 'claim_updated', claim: claim('in_progress'), summary: null },
     })
     expect(state.awaitingReply).toBe(false)
-    expect(state.transcript.map((e) => e.role)).toEqual(['declarant', 'agent'])
+    expect(state.transcript).toEqual([
+      { role: 'declarant', text: 'Hola' },
+      { role: 'agent', text: '¿Póliza?', alert: false },
+    ])
   })
 
   it('replaces everything with a snapshot', () => {
@@ -55,6 +58,7 @@ describe('reducer', () => {
           type: 'snapshot',
           conversation: {
             id: 'abc',
+            created_at: '2026-10-20T10:00:00+02:00',
             claim: claim('confirmed'),
             summary: null,
             transcript: [{ role: 'agent', text: 'Hola' }],
@@ -63,6 +67,7 @@ describe('reducer', () => {
       },
     )
     expect(state.conversationId).toBe('abc')
+    expect(state.startedAt).toBe(Date.parse('2026-10-20T08:00:00Z')) // the call's real start
     expect(state.transcript).toEqual([{ role: 'agent', text: 'Hola' }])
   })
 

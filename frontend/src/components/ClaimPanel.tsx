@@ -1,50 +1,76 @@
-import {
-  CLOSURE_LABELS,
-  FIELD_LABELS,
-  formatValue,
-  STATUS_LABELS,
-  URGENCY_LABELS,
-} from '../claim/format'
+import { CLOSURE_LABELS, URGENCY_LABELS, displayPlate } from '../claim/format'
+import { stages } from '../claim/stages'
 import type { ClaimView, Summary } from '../conversation/protocol'
 
-const STATE_ICONS = { empty: '○', valid: '✓', invalid: '!' } as const
+function textField(claim: ClaimView, name: string): string | undefined {
+  const value = claim.fields.find((field) => field.name === name && field.state === 'valid')?.value
+  return typeof value === 'string' ? value : undefined
+}
 
 export function ClaimPanel({ claim, summary }: { claim: ClaimView | null; summary: Summary | null }) {
-  if (claim === null) return <aside className="panel">Conectando…</aside>
+  if (claim === null) {
+    return (
+      <aside className="panel">
+        <p className="panel-muted">Conectando…</p>
+      </aside>
+    )
+  }
+
+  const policy = textField(claim, 'policy_number')
+  const plate = textField(claim, 'plate')
 
   return (
-    <aside className="panel" aria-label="Datos de la declaración">
+    <aside className="panel" aria-label="Su declaración">
       <header className="panel-header">
-        <span className={`status status-${claim.status}`}>{STATUS_LABELS[claim.status]}</span>
+        <h2>Su declaración</h2>
         {claim.urgency && (
           <span className={`urgency urgency-${claim.urgency}`}>
             Urgencia {URGENCY_LABELS[claim.urgency].toLowerCase()}
           </span>
         )}
       </header>
+      {(policy || plate) && (
+        <p className="panel-muted">
+          {[policy && `Póliza ${policy}`, plate && displayPlate(plate)]
+            .filter(Boolean)
+            .join(' · ')}
+        </p>
+      )}
 
-      {claim.reference && <p className="reference">{claim.reference}</p>}
+      {claim.reference && (
+        <div className="reference">
+          <span>Referencia</span>
+          <strong>{claim.reference}</strong>
+        </div>
+      )}
       {claim.closure_reason && (
         <p className="closure">{CLOSURE_LABELS[claim.closure_reason] ?? claim.closure_reason}</p>
       )}
 
-      <ul className="fields">
-        {claim.fields.map((field) => (
-          <li key={field.name} className={`field field-${field.state}`}>
-            <span className="field-icon" aria-hidden>
-              {STATE_ICONS[field.state]}
+      <ol className="stages">
+        {stages(claim).map((stage, i) => (
+          <li
+            key={stage.id}
+            className={`stage stage-${stage.state}${stage.current ? ' stage-current' : ''}`}
+          >
+            <span className="stage-marker" aria-hidden="true">
+              {stage.state === 'done' ? '✓' : stage.state === 'error' ? '!' : i + 1}
             </span>
-            <span className="field-label">{FIELD_LABELS[field.name] ?? field.name}</span>
-            <span className="field-value">
-              {field.state === 'invalid' ? field.error : formatValue(field.name, field.value)}
-            </span>
+            <div>
+              <div className="stage-title">{stage.title}</div>
+              {stage.lines.map((line) => (
+                <div key={line.text} className={line.error ? 'stage-line stage-line-error' : 'stage-line'}>
+                  {line.text}
+                </div>
+              ))}
+            </div>
           </li>
         ))}
-      </ul>
+      </ol>
 
       {summary && (
         <section className="summary">
-          <h2>Resumen para el tramitador</h2>
+          <h3>Resumen para el tramitador</h3>
           <ul>
             {summary.key_points.map((point) => (
               <li key={point}>{point}</li>
