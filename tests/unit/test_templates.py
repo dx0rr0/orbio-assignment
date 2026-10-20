@@ -1,13 +1,15 @@
 from datetime import datetime
 
-from claims_agent.domain import MADRID, LossWindow
+from claims_agent.domain import MADRID, Claim, LossWindow, apply_update
 from claims_agent.engine.templates import (
     display_plate,
     format_loss_window,
+    read_back,
     spoken_plate,
     spoken_policy_number,
     spoken_reference,
 )
+from tests.engine.fakes import COMPLETE, HAPPY_POLICY, NOW
 
 
 def window(start: datetime, end: datetime | None = None) -> LossWindow:
@@ -44,3 +46,12 @@ def test_multi_day_loss_window_is_shown_in_madrid_time():
     assert format_loss_window(window(start, end)) == (
         "entre el 13 de octubre de 2026 a las 22:00 y el 14 de octubre de 2026 a las 08:00"
     )
+
+
+def test_read_back_ends_the_free_text_description_with_a_full_stop():
+    claim = apply_update(Claim(), COMPLETE, policy=HAPPY_POLICY, now=NOW).claim
+    assert "Descripción: Una piedra que saltó de un camión rompió el parabrisas.\n" in (
+        read_back(claim).text
+    )
+    already_punctuated = claim.model_copy(update={"description": "Me dieron un golpe."})
+    assert "golpe.\n" in read_back(already_punctuated).text

@@ -7,13 +7,12 @@ from uuid import UUID
 from asgiref.sync import async_to_sync
 from celery import shared_task
 from channels.layers import get_channel_layer
-from django.conf import settings
 from django.utils import timezone
 
-from claims_agent.adapters.openrouter import OpenRouterChatModel
 from claims_agent.domain import ClaimStatus, ClosureReason, Conversation, close
 from claims_agent.engine.summary import SummaryError, summarize
 from claims_agent.ports import ConcurrentUpdateError
+from claims_service.intake import services
 from claims_service.intake.groups import group_name
 from claims_service.intake.models import ConversationRecord
 from claims_service.intake.presenters import claim_updated_event
@@ -40,7 +39,9 @@ def _notify(conversation: Conversation) -> None:
 )
 def generate_claim_summary(conversation_id: str) -> None:
     repository = DjangoConversationRepository()
-    llm = OpenRouterChatModel.create(settings.OPENROUTER_API_KEY)
+    # Built per task: the cached clients of the web process are bound to its event loop.
+    llm = services.chat_model()
+    telemetry = services.telemetry()
 
     async def run() -> Conversation | None:
         conversation = await repository.get(UUID(conversation_id))
@@ -49,7 +50,13 @@ def generate_claim_summary(conversation_id: str) -> None:
         summary = await summarize(llm, conversation)
         return await repository.save(conversation.model_copy(update={"summary": summary}))
 
-    conversation = async_to_sync(run)()
+    try:
+        with telemetry.trace("claim_summary", session_id=conversation_id) as trace:
+            conversation = async_to_sync(run)()
+            if conversation is not None and conversation.summary is not None:
+                trace.update(output=conversation.summary.model_dump(mode="json"))
+    finally:
+        telemetry.flush()
     if conversation is not None:
         logger.info("Claim summary generated", extra={"conversation_id": conversation_id})
         _notify(conversation)

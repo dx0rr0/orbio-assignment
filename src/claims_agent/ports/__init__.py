@@ -7,7 +7,7 @@ from claims_agent.ports.repository import (
     ConversationRepository,
 )
 from claims_agent.ports.speech import SpeechError, SpeechToText, TextToSpeech
-from claims_agent.ports.telemetry import NullTelemetry, Telemetry
+from claims_agent.ports.telemetry import NullTelemetry, Span, Telemetry
 
 __all__ = [
     "ChatModel",
@@ -17,6 +17,7 @@ __all__ = [
     "ConversationRepository",
     "LLMError",
     "NullTelemetry",
+    "Span",
     "SpeechError",
     "SpeechToText",
     "Telemetry",

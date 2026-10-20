@@ -13,13 +13,14 @@ so turns of one connection never overlap.
 
 import base64
 import binascii
+from contextlib import AbstractContextManager
 from typing import Any
 from uuid import UUID
 
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
 from claims_agent.engine import TurnResult
-from claims_agent.ports import ConcurrentUpdateError, ConversationNotFoundError
+from claims_agent.ports import ConcurrentUpdateError, ConversationNotFoundError, Span
 from claims_service.intake import services
 from claims_service.intake.groups import group_name
 from claims_service.intake.presenters import (
@@ -47,7 +48,8 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             await self.send_json(
                 {"type": "conversation_started", "conversation_id": str(self.conversation_id)}
             )
-            await self._send_turn(result, reply_audio=True)
+            with self._trace("greeting"):
+                await self._send_turn(result, reply_audio=True)
             return
         try:
             conversation = await services.repository().get(conversation_id)
@@ -68,24 +70,30 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             return
         match content.get("type"):
             case "text" if isinstance(content.get("text"), str):
-                utterance = content["text"]
-                reply_audio = bool(content.get("reply_audio", False))
+                with self._trace("turn", input={"text": content["text"]}) as trace:
+                    reply_audio = bool(content.get("reply_audio", False))
+                    await self._turn(content["text"], reply_audio=reply_audio, trace=trace)
             case "audio" if isinstance(content.get("data"), str):
                 wav = await self._decode_audio(content["data"])
                 if wav is None:
                     return
-                utterance = await services.voice().transcribe(wav)
-                reply_audio = True
-                await self.send_json({"type": "transcript", "text": utterance})
+                with self._trace("turn", input={"wav_bytes": len(wav)}) as trace:
+                    utterance = await services.voice().transcribe(wav)
+                    await self.send_json({"type": "transcript", "text": utterance})
+                    await self._turn(utterance, reply_audio=True, trace=trace)
             case _:
                 await self._error('expected {"type": "text", "text": ...} or audio')
-                return
 
+    async def _turn(self, utterance: str, *, reply_audio: bool, trace: Span) -> None:
         try:
             result = await services.engine().handle_text(self.conversation_id, utterance)
         except ConcurrentUpdateError:
             await self._error("the conversation changed meanwhile; please repeat")
             return
+        trace.update(
+            output=[reply.text for reply in result.replies],
+            metadata={"utterance": utterance, "status": result.conversation.claim.status.value},
+        )
         await self._send_turn(result, reply_audio=reply_audio)
         if result.confirmed_claim:
             generate_claim_summary.delay(str(self.conversation_id))
@@ -95,6 +103,9 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         await self.send_json(event["payload"])
 
     # --- helpers --------------------------------------------------------------------------
+
+    def _trace(self, name: str, input: Any = None) -> AbstractContextManager[Span]:
+        return services.telemetry().trace(name, session_id=str(self.conversation_id), input=input)
 
     async def _join(self, conversation_id: UUID) -> None:
         self.conversation_id = conversation_id

@@ -23,4 +23,5 @@ RUN useradd --create-home app
 USER app
 
 EXPOSE 8000
-CMD ["uvicorn", "claims_service.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "claims_service.asgi:application", "--host", "0.0.0.0", "--port", "8000", \
+     "--log-config", "src/claims_service/uvicorn_logging.json"]

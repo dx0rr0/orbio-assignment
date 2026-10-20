@@ -56,6 +56,8 @@ CHANNEL_LAYERS = {
 CELERY_BROKER_URL = REDIS_URL
 CELERY_TASK_ACKS_LATE = True
 CELERY_TASK_REJECT_ON_WORKER_LOST = True
+# Keep the JSON logging configured below instead of Celery's own format.
+CELERY_WORKER_HIJACK_ROOT_LOGGER = False
 CELERY_BEAT_SCHEDULE = {
     "sweep-abandoned-conversations": {
         "task": "claims_service.intake.tasks.sweep_abandoned_conversations",

@@ -377,3 +377,11 @@ def test_stated_values_keep_falsy_answers():
         "injuries": False,
         "plate": "0",
     }
+
+
+async def test_validation_is_traced_with_the_stated_values(engine, llm, telemetry, conversation_id):
+    llm.then(call(UPDATE_CLAIM, IDENTIFICATION | {"injuries": None}), say("¿Cómo se llama?"))
+
+    await engine.handle_text(conversation_id, "AUT 48213907, 4721 KLM")
+
+    assert telemetry.spans == [("validation", IDENTIFICATION)]

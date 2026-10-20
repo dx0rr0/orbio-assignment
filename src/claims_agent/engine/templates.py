@@ -93,6 +93,11 @@ def format_loss_window(window: LossWindow) -> str:
     return f"entre el {_date(start)} a las {_time(start)} y el {_date(end)} a las {_time(end)}"
 
 
+def _sentence(text: str) -> str:
+    """Free text ends with punctuation, so the next read-back line doesn't run into it."""
+    return text if text.endswith((".", "!", "?")) else f"{text}."
+
+
 def _yes_no(value: bool | None) -> str:
     return "sí" if value else "no"
 
@@ -148,7 +153,7 @@ def read_back(claim: Claim) -> BotMessage:
             f"{format_loss_window(claim.loss_window)}, en {place}.",
             None,
         ),
-        (f"Descripción: {claim.description}", None),
+        (f"Descripción: {_sentence(claim.description or '')}", None),
         (
             f"Heridos: {_yes_no(claim.injuries)}. "
             f"Vehículo inmovilizado: {_yes_no(claim.vehicle_immobilized)}.",

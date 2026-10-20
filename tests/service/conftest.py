@@ -7,7 +7,7 @@ from django.db import connections
 from django.utils import timezone
 
 from claims_agent.engine import ConversationEngine, Voice
-from claims_agent.ports import SpeechError
+from claims_agent.ports import NullTelemetry, SpeechError
 from claims_agent.seed import seed_policies
 from claims_service.intake import services
 from claims_service.intake.models import PolicyRecord
@@ -85,3 +85,4 @@ def fake_providers(monkeypatch, llm, stt, tts, repository):
     monkeypatch.setattr(services, "engine", lambda: engine)
     monkeypatch.setattr(services, "voice", lambda: Voice(stt, tts))
     monkeypatch.setattr(services, "repository", lambda: repository)
+    monkeypatch.setattr(services, "telemetry", NullTelemetry)

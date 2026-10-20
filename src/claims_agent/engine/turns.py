@@ -284,16 +284,18 @@ class ConversationEngine:
     ) -> tuple[Conversation, Mapping[str, Any]]:
         claim = conversation.claim
         proposed = tools.stated_values(proposed)
-        number = policy_number_to_look_up(claim, proposed)
-        policy: Policy | None = await self._repository.get_policy(number) if number else None
-        result = apply_update(claim, proposed, policy=policy, now=now)
-        conversation = conversation.model_copy(update={"claim": result.claim})
-        return conversation, {
-            "accepted": list(result.accepted),
-            "rejected": dict(result.rejected),
-            "status": result.claim.status.value,
-            "missing_fields": list(result.claim.missing_fields),
-        }
+        with self._telemetry.span("validation", input=proposed) as span:
+            number = policy_number_to_look_up(claim, proposed)
+            policy: Policy | None = await self._repository.get_policy(number) if number else None
+            result = apply_update(claim, proposed, policy=policy, now=now)
+            outcome = {
+                "accepted": list(result.accepted),
+                "rejected": dict(result.rejected),
+                "status": result.claim.status.value,
+                "missing_fields": list(result.claim.missing_fields),
+            }
+            span.update(output=outcome)
+        return conversation.model_copy(update={"claim": result.claim}), outcome
 
     async def _confirm_claim(
         self, conversation: Conversation, now: datetime

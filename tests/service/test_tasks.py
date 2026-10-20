@@ -12,7 +12,7 @@ from claims_agent.domain import (
     PendingField,
 )
 from claims_agent.engine.summary import RECORD_KEY_POINTS
-from claims_service.intake import tasks
+from claims_service.intake import services, tasks
 from claims_service.intake.repository import DjangoConversationRepository
 from claims_service.intake.tasks import (
     ABANDONED_AFTER,
@@ -93,7 +93,7 @@ def test_a_turn_saved_during_the_sweep_wins(repository, notified, monkeypatch):
 
 @pytest.fixture
 def summary_llm(monkeypatch, llm):
-    monkeypatch.setattr(tasks.OpenRouterChatModel, "create", lambda api_key: llm)
+    monkeypatch.setattr(services, "chat_model", lambda: llm)
     return llm
 
 

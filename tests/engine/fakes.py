@@ -1,10 +1,11 @@
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
 from claims_agent.domain import MADRID, Message, ToolCall
-from claims_agent.ports import Completion, LLMError
+from claims_agent.ports import Completion, LLMError, NullTelemetry, Span
 from claims_agent.seed import seed_policies
 
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=MADRID)
@@ -64,9 +65,16 @@ class ScriptedLLM:
         return step
 
 
-class RecordingTelemetry:
+class RecordingTelemetry(NullTelemetry):
     def __init__(self) -> None:
         self.scores: list[tuple[str, float, str | None]] = []
+        self.spans: list[tuple[str, Any]] = []
+
+    @contextmanager
+    def span(self, name: str, *, input: Any = None) -> Iterator[Span]:
+        self.spans.append((name, input))
+        with super().span(name, input=input) as span:
+            yield span
 
     def score(self, name: str, value: float, comment: str | None = None) -> None:
         self.scores.append((name, value, comment))
