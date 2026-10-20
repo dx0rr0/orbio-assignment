@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from claims_agent.domain.claim import Claim
+from claims_agent.domain.claim import Claim, Urgency
 
 
 class Role(StrEnum):
@@ -48,7 +48,7 @@ class ClaimSummary(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     key_points: tuple[str, ...]
-    urgency: str
+    urgency: Urgency
     next_steps: tuple[str, ...]
 
 

@@ -65,6 +65,16 @@ _WORD = re.compile(r"\w{2,}")
 class TurnResult:
     conversation: Conversation
     replies: tuple[BotMessage, ...]
+    # The claim status before the turn, to tell what the turn changed.
+    previous_status: ClaimStatus = ClaimStatus.IN_PROGRESS
+
+    @property
+    def confirmed_claim(self) -> bool:
+        """Whether this turn confirmed the claim."""
+        return (
+            self.previous_status is not ClaimStatus.CONFIRMED
+            and self.conversation.claim.status is ClaimStatus.CONFIRMED
+        )
 
 
 class _LLMUnavailableError(Exception):
@@ -118,8 +128,11 @@ class ConversationEngine:
     async def handle_text(self, conversation_id: UUID, utterance: str) -> TurnResult:
         conversation = await self._repository.get(conversation_id)
         if conversation.claim.status.is_final:
-            return TurnResult(conversation, (templates.already_closed(conversation.claim),))
+            status = conversation.claim.status
+            reply = templates.already_closed(conversation.claim)
+            return TurnResult(conversation, (reply,), previous_status=status)
 
+        previous_status = conversation.claim.status
         now = self._clock()
         if is_unintelligible(utterance):
             conversation, replies = self._unintelligible(conversation)
@@ -129,7 +142,8 @@ class ConversationEngine:
             conversation, replies = await self._converse(conversation, now)
 
         conversation = conversation.model_copy(update={"updated_at": now})
-        return TurnResult(await self._repository.save(conversation), replies)
+        saved = await self._repository.save(conversation)
+        return TurnResult(saved, replies, previous_status=previous_status)
 
     # --- turn kinds -----------------------------------------------------------------------
 

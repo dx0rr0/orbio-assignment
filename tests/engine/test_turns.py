@@ -4,24 +4,7 @@ from claims_agent.domain import ClaimStatus, ClosureReason, Role
 from claims_agent.engine import templates
 from claims_agent.engine.tools import CONFIRM_CLAIM, DECLARANT_REFUSES, UPDATE_CLAIM
 from claims_agent.engine.turns import MAX_LLM_FAILURES, MAX_REPEAT_REQUESTS
-from tests.engine.fakes import LLM_DOWN, NEW_POLICY, call, say
-
-IDENTIFICATION = {"policy_number": "AUT-48213907", "plate": "4721 KLM"}
-COMPLETE = IDENTIFICATION | {
-    "declarant_name": "María López Fernández",
-    "driver_is_policyholder": True,
-    "loss_type": "broken_glass",
-    "loss_window": {"start": "2026-10-19T19:00", "end": "2026-10-19T19:00"},
-    "loss_location": {
-        "way": "A-3",
-        "municipality": "Arganda del Rey",
-        "province": "Madrid",
-        "country": "España",
-    },
-    "description": "Una piedra que saltó de un camión rompió el parabrisas",
-    "injuries": False,
-    "vehicle_immobilized": False,
-}
+from tests.engine.fakes import COMPLETE, IDENTIFICATION, LLM_DOWN, NEW_POLICY, call, say
 
 
 def texts(result) -> list[str]:

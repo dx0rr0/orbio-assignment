@@ -1,0 +1,69 @@
+x-backend: &backend
+  build: .
+  env_file: .env
+  environment:
+    POSTGRES_HOST: db
+    POSTGRES_PORT: "5432"
+    REDIS_URL: redis://redis:6379/0
+    DJANGO_ALLOWED_HOSTS: "*"
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: claims
+      POSTGRES_USER: claims
+      POSTGRES_PASSWORD: claims
+    ports: ["55432:5432"]  # host ports avoid clashing with local installs
+    volumes: [db-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "claims"]
+      interval: 2s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6380:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 20
+
+  # Runs once before the services that need the schema and the demo policies.
+  migrate:
+    <<: *backend
+    command: sh -c "django-admin migrate --noinput && django-admin seed_policies"
+
+  backend:
+    <<: *backend
+    ports: ["8000:8000"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    <<: *backend
+    command: celery -A claims_service worker --loglevel INFO --concurrency 2
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  beat:
+    <<: *backend
+    command: celery -A claims_service beat --loglevel INFO --schedule /tmp/celerybeat-schedule
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    build: ./frontend
+    ports: ["8080:80"]
+    depends_on: [backend]
+
+volumes:
+  db-data:

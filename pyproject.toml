@@ -5,16 +5,26 @@ description = "Voice agent that takes the first notice of loss for a fictional c
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "celery>=5.6.3",
+    "channels>=4.3.2",
+    "channels-redis>=4.3.0",
+    "django>=6.1.2",
+    "django-ninja>=1.7.1",
     "httpx>=0.28.1",
     "openai>=3.35.1",
+    "psycopg[binary]>=3.3.6",
     "pydantic>=2.11",
+    "redis>=8.1.0",
     "tzdata>=2025.2",
+    "uvicorn[standard]>=0.54.0",
 ]
 
 [dependency-groups]
 dev = [
+    "daphne>=4.2.3",
     "pytest>=8.4",
     "pytest-asyncio>=1.4.0",
+    "pytest-django>=4.14.0",
     "ruff>=0.12",
 ]
 
@@ -25,12 +35,18 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+DJANGO_SETTINGS_MODULE = "claims_service.settings"
 addopts = "-m 'not e2e'"
 markers = ["e2e: hits real providers; run on demand with `pytest -m e2e`"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+extend-exclude = ["**/migrations/*"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Django declares model options as class attributes.
+"**/models.py" = ["RUF012"]
