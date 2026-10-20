@@ -208,3 +208,24 @@ async def test_background_updates_reach_watchers():
 
     assert await communicator.receive_json_from(timeout=5) == payload
     await communicator.disconnect()
+
+
+async def test_a_broker_outage_does_not_break_the_confirmation(llm, policies, monkeypatch):
+    class BrokenTask:
+        @staticmethod
+        def delay(conversation_id: str) -> None:
+            raise ConnectionError("redis is down")
+
+    monkeypatch.setattr(consumers, "generate_claim_summary", BrokenTask)
+    communicator, _ = await started_conversation()
+    llm.then(call(UPDATE_CLAIM, COMPLETE), call(CONFIRM_CLAIM))
+    await communicator.send_json_to({"type": "text", "text": "Todos los datos"})
+    await receive_until(communicator, "claim_updated")
+
+    await communicator.send_json_to({"type": "text", "text": "Sí"})
+    events = await receive_until(communicator, "claim_updated")
+
+    assert events[-1]["claim"]["status"] == "confirmed"
+    await communicator.send_json_to({"type": "text", "text": "Gracias"})
+    assert (await communicator.receive_json_from(timeout=5))["type"] == "bot_message"
+    await communicator.disconnect()

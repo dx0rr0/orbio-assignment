@@ -52,6 +52,12 @@ The person driving the insured vehicle when the loss happened. May be neither th
 
 ### Lifecycle
 
+**Read-back** (*Lectura de la declaración*):
+The agent reading the complete claim aloud so the declarant can confirm or correct it. It is always written by code, never by the LLM.
+
+**Reference** (*Referencia*):
+Identifier of a confirmed claim, `SIN-<year>-<6-digit sequence>`, read aloud to the declarant.
+
 **Confirmation** (*Confirmación*):
 The moment the declarant approves the read-back of the complete claim. After it the claim is closed.
 

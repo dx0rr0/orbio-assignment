@@ -13,6 +13,7 @@ so turns of one connection never overlap.
 
 import base64
 import binascii
+import logging
 from contextlib import AbstractContextManager
 from typing import Any
 from uuid import UUID
@@ -33,6 +34,8 @@ from claims_service.intake.tasks import generate_claim_summary
 # About a minute of 16 kHz mono 16-bit audio, base64-encoded.
 MAX_AUDIO_BASE64_CHARS = 3_000_000
 NOT_FOUND_CLOSE_CODE = 4404
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationConsumer(AsyncJsonWebsocketConsumer):
@@ -96,13 +99,23 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         )
         await self._send_turn(result, reply_audio=reply_audio)
         if result.confirmed_claim:
-            generate_claim_summary.delay(str(self.conversation_id))
+            self._request_summary()
 
     async def claim_updated(self, event: dict[str, Any]) -> None:
         """Pushed to the group by background tasks (summary, abandonment)."""
         await self.send_json(event["payload"])
 
     # --- helpers --------------------------------------------------------------------------
+
+    def _request_summary(self) -> None:
+        # The claim is already confirmed and announced; a broker outage must not end the call.
+        try:
+            generate_claim_summary.delay(str(self.conversation_id))
+        except Exception:
+            logger.exception(
+                "Could not queue the claim summary",
+                extra={"conversation_id": str(self.conversation_id)},
+            )
 
     def _trace(self, name: str, input: Any = None) -> AbstractContextManager[Span]:
         return services.telemetry().trace(name, session_id=str(self.conversation_id), input=input)

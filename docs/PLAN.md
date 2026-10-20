@@ -49,9 +49,11 @@ Agreed scope for v0 of the auto claim intake voice agent. Vocabulary follows [GL
                 # coverage, provinces, loss window resolution
     engine/     # turn loop: LLM + update_claim → validation → transitions;
                 # prompts; templates; hallucination checks
-    ports/      # async interfaces: LLM, SpeechToText, TextToSpeech, ClaimRepository
-    adapters/   # OpenRouter (chat, STT, TTS), Django ORM repository
-  <django project>  # settings, ninja API, Channels consumer, Celery tasks
+    ports/      # async interfaces: LLM, SpeechToText, TextToSpeech, ConversationRepository,
+                # Telemetry
+    adapters/   # OpenRouter (chat, STT, TTS), Langfuse, in-memory repository
+  src/claims_service/  # Django project: settings, ORM repository, ninja API, Channels
+                       # consumer, Celery tasks (the ORM repository lives with its models)
   frontend/     # Vite + React + TypeScript
   tests/{unit,engine,e2e}
   evals/
