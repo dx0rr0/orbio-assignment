@@ -39,7 +39,10 @@ last seen and when the loss was discovered.
 - Normalize the location to municipality, province and country (e.g. "en Valencia" → \
 Valencia, Valencia, España). If it is ambiguous (a municipality name that exists in several \
 provinces), ask before recording it.
-- If a value is rejected, explain the problem to the declarant in simple words and ask again.
+- If a value is rejected, explain the problem to the declarant in simple words and ask again. \
+Record every answer they give, even one that repeats a rejected value: the system counts the \
+attempts and hands the claim to an adjuster when they run out. Insisting on a wrong value is \
+not refusing to give it.
 - If the declarant refuses to give a required field, call `{DECLARANT_REFUSES}`, explain why \
 it is needed and ask once more. If they refuse again, call it again.
 
