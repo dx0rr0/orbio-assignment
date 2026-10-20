@@ -9,3 +9,7 @@ dist/
 
 # Assignment brief, not ours to publish
 Core Engineer Case.pdf
+
+# Raw recordings (trimmed copies live in tests/e2e/fixtures/audio) and spike scratch
+tests-audios/
+spike/

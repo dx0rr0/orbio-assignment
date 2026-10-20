@@ -1,0 +1,110 @@
+"""The tools the LLM may call. They only propose: the engine validates and decides."""
+
+from typing import Any
+
+from claims_agent.domain import CLAIM_FIELDS, LossType
+
+UPDATE_CLAIM = "update_claim"
+CONFIRM_CLAIM = "confirm_claim"
+DECLARANT_REFUSES = "declarant_refuses_field"
+
+_BOOL = {"type": "boolean"}
+_TEXT = {"type": "string"}
+_DATETIME = {
+    "type": "string",
+    "description": "ISO 8601 local datetime in Europe/Madrid, e.g. 2026-10-19T19:00",
+}
+
+_CLAIM_PROPERTIES: dict[str, Any] = {
+    "policy_number": {**_TEXT, "description": "As said by the declarant, e.g. AUT-48213907"},
+    "plate": {**_TEXT, "description": "Plate of the insured vehicle, e.g. 4721 KLM"},
+    "declarant_name": {**_TEXT, "description": "Full name of the person talking to you"},
+    "driver_is_policyholder": {
+        **_BOOL,
+        "description": "Whether the policyholder was driving the insured vehicle",
+    },
+    "driver_name": {**_TEXT, "description": "Full name of the driver, if not the policyholder"},
+    "loss_type": {"type": "string", "enum": [t.value for t in LossType]},
+    "loss_window": {
+        "type": "object",
+        "description": (
+            "When it happened. Same start and end when the time is known; otherwise the "
+            "interval it must have happened in (for theft or parked damage: from when the "
+            "vehicle was last seen to when the damage was discovered)."
+        ),
+        "properties": {"start": _DATETIME, "end": _DATETIME},
+        "required": ["start", "end"],
+    },
+    "loss_location": {
+        "type": "object",
+        "description": (
+            "Where it happened, normalized: way (street, road or kilometre point, optional), "
+            "municipality, province (one of Spain's 52) and country."
+        ),
+        "properties": {
+            "way": _TEXT,
+            "municipality": _TEXT,
+            "province": _TEXT,
+            "country": _TEXT,
+        },
+        "required": ["municipality", "province", "country"],
+    },
+    "description": {**_TEXT, "description": "What happened, in the declarant's words, summarized"},
+    "injuries": {**_BOOL, "description": "Whether anyone was injured"},
+    "vehicle_immobilized": {**_BOOL, "description": "Whether the insured vehicle cannot be driven"},
+    "other_vehicle_involved": {**_BOOL, "description": "Collision only"},
+    "other_vehicle_plate": {**_TEXT, "description": "Collision with another vehicle only"},
+    "friendly_report_signed": {
+        **_BOOL,
+        "description": "Collision with another vehicle only: whether both drivers signed the "
+        "friendly accident report (parte amistoso)",
+    },
+    "police_report_filed": {**_BOOL, "description": "Theft only: whether it was reported"},
+}
+assert set(_CLAIM_PROPERTIES) == set(CLAIM_FIELDS)
+
+TOOLS: tuple[dict[str, Any], ...] = (
+    {
+        "type": "function",
+        "function": {
+            "name": UPDATE_CLAIM,
+            "description": (
+                "Record claim fields the declarant has just stated or corrected. Include only "
+                "fields with values the declarant actually gave; never guess. The result says "
+                "which values were accepted and why others were rejected."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": _CLAIM_PROPERTIES,
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": CONFIRM_CLAIM,
+            "description": (
+                "Call when, after the read-back of the complete claim, the declarant says that "
+                "everything is correct."
+            ),
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": DECLARANT_REFUSES,
+            "description": (
+                "Call every time the declarant refuses to give a required field, including "
+                "when they insist after you explained why it is needed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"field": {"type": "string", "enum": list(CLAIM_FIELDS)}},
+                "required": ["field"],
+                "additionalProperties": False,
+            },
+        },
+    },
+)
