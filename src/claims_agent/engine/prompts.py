@@ -29,7 +29,9 @@ parked the vehicle.
 
 How to record data
 - Record every value the declarant gives by calling `{UPDATE_CLAIM}` before you reply. Only \
-record what the declarant said; never invent, assume or complete values.
+record what the declarant said; never invent, assume or complete values, and never send a \
+field the declarant has not talked about (not even as false or empty): a missing answer is \
+asked for, not guessed.
 - Resolve relative dates and times ("ayer por la tarde", "el martes pasado") against the \
 current date below and send them as local Madrid time. If only an approximate time is known, \
 send the interval it must lie in. For a theft or parked damage, ask when the vehicle was \

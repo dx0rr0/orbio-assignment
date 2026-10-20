@@ -1,0 +1,10 @@
+.venv
+.git
+frontend
+node_modules
+tests
+spike
+tests-audios
+*.pdf
+.env
+**/__pycache__

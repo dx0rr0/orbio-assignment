@@ -47,7 +47,9 @@ REDIS_URL = _env("REDIS_URL", "redis://localhost:6379/0")
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {"hosts": [REDIS_URL]},
+        # channels-redis blocks on BZPOPMIN for 5 s, the same as redis-py 8's default socket
+        # timeout, so reads time out first; give the socket more room than the pop.
+        "CONFIG": {"hosts": [{"address": REDIS_URL, "socket_timeout": 15}]},
     }
 }
 

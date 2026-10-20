@@ -1,7 +1,7 @@
 import json
 
 from claims_agent.domain import ClaimStatus, ClosureReason, Role
-from claims_agent.engine import templates
+from claims_agent.engine import templates, tools
 from claims_agent.engine.tools import CONFIRM_CLAIM, DECLARANT_REFUSES, UPDATE_CLAIM
 from claims_agent.engine.turns import MAX_LLM_FAILURES, MAX_REPEAT_REQUESTS
 from tests.engine.fakes import COMPLETE, IDENTIFICATION, LLM_DOWN, NEW_POLICY, call, say
@@ -336,3 +336,44 @@ async def test_reply_with_an_invented_reference_scores_zero(
     [(name, value, comment)] = telemetry.scores
     assert (name, value) == ("hallucination_check", 0.0)
     assert "reference" in comment
+
+
+# --- models that fill every tool property -------------------------------------------------
+
+
+async def test_blank_proposals_are_not_stated_values(engine, llm, conversation_id):
+    # Shape of a real completion: every property sent, the unstated ones blank or null.
+    proposed = IDENTIFICATION | {
+        "declarant_name": "Elena Sánchez",
+        "driver_name": "",
+        "loss_type": None,
+        "loss_window": {"start": "", "end": ""},
+        "loss_location": {"way": "", "municipality": "", "province": "", "country": ""},
+        "description": "   ",
+        "injuries": None,
+    }
+    llm.then(call(UPDATE_CLAIM, proposed), say("Gracias, Elena. ¿Quién conducía?"))
+
+    result = await engine.handle_text(conversation_id, "Soy Elena, AUT 48213907, 4721 KLM")
+
+    [tool_result] = tool_results(llm.requests[1])
+    assert tool_result["accepted"] == ["policy_number", "plate", "declarant_name"]
+    assert tool_result["rejected"] == {}
+    claim = result.conversation.claim
+    assert claim.field_errors == {}
+    assert claim.failed_attempts == {}
+    assert claim.injuries is None
+
+
+def test_every_claim_field_can_be_declared_unstated():
+    [update] = [t for t in tools.TOOLS if t["function"]["name"] == UPDATE_CLAIM]
+    properties = update["function"]["parameters"]["properties"]
+    assert all("null" in schema["type"] for schema in properties.values())
+    assert None in properties["loss_type"]["enum"]
+
+
+def test_stated_values_keep_falsy_answers():
+    assert tools.stated_values({"injuries": False, "plate": "0", "x": None, "y": {"a": " "}}) == {
+        "injuries": False,
+        "plate": "0",
+    }

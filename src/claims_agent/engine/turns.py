@@ -283,6 +283,7 @@ class ConversationEngine:
         self, conversation: Conversation, proposed: Mapping[str, Any], now: datetime
     ) -> tuple[Conversation, Mapping[str, Any]]:
         claim = conversation.claim
+        proposed = tools.stated_values(proposed)
         number = policy_number_to_look_up(claim, proposed)
         policy: Policy | None = await self._repository.get_policy(number) if number else None
         result = apply_update(claim, proposed, policy=policy, now=now)

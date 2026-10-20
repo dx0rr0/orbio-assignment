@@ -1,5 +1,6 @@
 """The tools the LLM may call. They only propose: the engine validates and decides."""
 
+from collections.abc import Mapping
 from typing import Any
 
 from claims_agent.domain import CLAIM_FIELDS, LossType
@@ -63,6 +64,28 @@ _CLAIM_PROPERTIES: dict[str, Any] = {
 }
 assert set(_CLAIM_PROPERTIES) == set(CLAIM_FIELDS)
 
+
+def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
+    """Some models fill every property of a tool; null gives them a way to say "not stated"
+    instead of inventing a value."""
+    nullable = {**schema, "type": [schema["type"], "null"]}
+    if "enum" in schema:
+        nullable["enum"] = [*schema["enum"], None]
+    return nullable
+
+
+def stated_values(proposed: Mapping[str, Any]) -> dict[str, Any]:
+    """The proposed values that carry something: null, blank text and objects with only blank
+    members mean the declarant did not say it, not that they said something invalid."""
+
+    def blank(value: Any) -> bool:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return True
+        return isinstance(value, dict) and all(blank(v) for v in value.values())
+
+    return {name: value for name, value in proposed.items() if not blank(value)}
+
+
 TOOLS: tuple[dict[str, Any], ...] = (
     {
         "type": "function",
@@ -70,12 +93,13 @@ TOOLS: tuple[dict[str, Any], ...] = (
             "name": UPDATE_CLAIM,
             "description": (
                 "Record claim fields the declarant has just stated or corrected. Include only "
-                "fields with values the declarant actually gave; never guess. The result says "
-                "which values were accepted and why others were rejected."
+                "fields with values the declarant actually gave, and leave out (or set to null) "
+                "every other field; never guess or fill in defaults. The result says which "
+                "values were accepted and why others were rejected."
             ),
             "parameters": {
                 "type": "object",
-                "properties": _CLAIM_PROPERTIES,
+                "properties": {name: _nullable(s) for name, s in _CLAIM_PROPERTIES.items()},
                 "additionalProperties": False,
             },
         },

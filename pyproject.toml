@@ -26,6 +26,7 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-django>=4.14.0",
     "ruff>=0.12",
+    "websockets>=17.3",
 ]
 
 [build-system]
