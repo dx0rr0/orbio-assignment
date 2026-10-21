@@ -43,12 +43,14 @@ def _parse_datetime(raw: object, name: str) -> datetime:
 
 
 def parse_loss_window(raw: object, now: datetime) -> LossWindow:
-    """Parse `{"start": iso, "end": iso?}`. `end` defaults to `start`; an `end` later than
-    `now` is clamped to `now` (e.g. "some time today")."""
+    """Parse `{"start": iso, "end": iso?}`. A missing or blank `end` defaults to `start`; an
+    `end` later than `now` is clamped to `now` (e.g. "some time today")."""
     if not isinstance(raw, dict) or "start" not in raw:
         raise FieldError('must be an object {"start": datetime, "end": datetime}')
     start = _parse_datetime(raw["start"], "start")
-    end = _parse_datetime(raw["end"], "end") if raw.get("end") is not None else start
+    raw_end = raw.get("end")
+    blank_end = raw_end is None or (isinstance(raw_end, str) and not raw_end.strip())
+    end = start if blank_end else _parse_datetime(raw_end, "end")
     if start > now:
         raise FieldError("the loss cannot be in the future")
     if end < start:
