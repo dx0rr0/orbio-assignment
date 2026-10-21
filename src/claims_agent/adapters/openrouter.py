@@ -2,14 +2,19 @@
 
 import io
 import wave
-from collections.abc import Mapping, Sequence
-from typing import Any, cast
+from collections.abc import Sequence
+from typing import Any
 
 import httpx
 import openai
+from openai.types.chat import (
+    ChatCompletionAssistantMessageParam,
+    ChatCompletionMessageParam,
+    ChatCompletionToolParam,
+)
 
 from claims_agent.domain import Message, Role, ToolCall
-from claims_agent.ports import Completion, LLMError, SpeechError
+from claims_agent.ports import Completion, LLMError, SpeechError, ToolSpec
 
 BASE_URL = "https://openrouter.ai/api/v1"
 CHAT_MODEL = "openai/gpt-6-luna"
@@ -23,18 +28,25 @@ TIMEOUT_SECONDS = 30.0
 CHAT_TIMEOUT_SECONDS = 10.0
 
 
-def _to_openai(message: Message) -> dict[str, Any]:
+def _to_openai(message: Message) -> ChatCompletionMessageParam:
     match message.role:
         case Role.USER:
+            if message.content is None:
+                raise ValueError("a user message needs content")
             return {"role": "user", "content": message.content}
         case Role.TOOL:
+            if message.content is None or message.tool_call_id is None:
+                raise ValueError("a tool message needs content and the id of its tool call")
             return {
                 "role": "tool",
                 "tool_call_id": message.tool_call_id,
                 "content": message.content,
             }
         case Role.ASSISTANT:
-            converted: dict[str, Any] = {"role": "assistant", "content": message.content}
+            converted: ChatCompletionAssistantMessageParam = {
+                "role": "assistant",
+                "content": message.content,
+            }
             if message.tool_calls:
                 converted["tool_calls"] = [
                     {
@@ -45,6 +57,18 @@ def _to_openai(message: Message) -> dict[str, Any]:
                     for call in message.tool_calls
                 ]
             return converted
+
+
+def _tool_to_openai(tool: ToolSpec) -> ChatCompletionToolParam:
+    function = tool["function"]
+    return {
+        "type": "function",
+        "function": {
+            "name": function["name"],
+            "description": function["description"],
+            "parameters": dict(function["parameters"]),
+        },
+    }
 
 
 class OpenRouterChatModel:
@@ -69,16 +93,13 @@ class OpenRouterChatModel:
         *,
         system: str,
         messages: Sequence[Message],
-        tools: Sequence[Mapping[str, Any]],
+        tools: Sequence[ToolSpec],
     ) -> Completion:
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,
-                # Built as plain dicts; the SDK's TypedDicts add nothing but casts here.
-                messages=cast(
-                    Any, [{"role": "system", "content": system}, *map(_to_openai, messages)]
-                ),
-                tools=cast(Any, list(tools)),
+                messages=[{"role": "system", "content": system}, *map(_to_openai, messages)],
+                tools=list(map(_tool_to_openai, tools)),
                 temperature=0.3,
             )
         except openai.OpenAIError as error:

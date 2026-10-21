@@ -1,6 +1,6 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Literal, Protocol, TypedDict
 
 from claims_agent.domain import Message, ToolCall
 
@@ -15,13 +15,27 @@ class Completion:
     tool_calls: tuple[ToolCall, ...] = ()
 
 
+class FunctionSpec(TypedDict):
+    name: str
+    description: str
+    # JSON Schema of the arguments.
+    parameters: Mapping[str, object]
+
+
+class ToolSpec(TypedDict):
+    """A function the LLM may call, in the function-calling format most providers accept."""
+
+    type: Literal["function"]
+    function: FunctionSpec
+
+
 class ChatModel(Protocol):
     async def complete(
         self,
         *,
         system: str,
         messages: Sequence[Message],
-        tools: Sequence[Mapping[str, Any]],
+        tools: Sequence[ToolSpec],
     ) -> Completion:
-        """`tools` are OpenAI-style function definitions. Raises `LLMError`."""
+        """Raises `LLMError`."""
         ...

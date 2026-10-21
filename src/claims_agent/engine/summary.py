@@ -6,10 +6,10 @@ from collections.abc import Sequence
 
 from claims_agent.domain import ClaimSummary, Conversation, Message, Role, ToolCall
 from claims_agent.domain.next_steps import next_steps
-from claims_agent.ports import ChatModel, LLMError
+from claims_agent.ports import ChatModel, LLMError, ToolSpec
 
 RECORD_KEY_POINTS = "record_key_points"
-_TOOL = {
+_TOOL: ToolSpec = {
     "type": "function",
     "function": {
         "name": RECORD_KEY_POINTS,
