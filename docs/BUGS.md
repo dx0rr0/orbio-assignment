@@ -32,7 +32,7 @@ Ground rules for whoever fixes them:
 
 ### B3. Failed attempts and refusals are counted per tool call, not per declarant turn
 
-- [ ] Fixed
+- [x] Fixed in c55ec32
 - **Where:** `src/claims_agent/domain/lifecycle.py` (failed-attempt counting, around lines 155–158); `src/claims_agent/engine/turns.py` (`_declarant_refuses`, around line 320; `MAX_LLM_ROUNDS = 4`).
 - **Trigger:** the LLM resends a rejected plate in 3 rounds of the same turn, and the claim becomes `escalated` / `retries_exhausted` after a single utterance. Two `declarant_refuses_field` calls in one response close the claim as `incomplete` without the explanation the plan requires.
 - **Expected:** at most one failure and one refusal per field per declarant turn.
@@ -70,7 +70,7 @@ Ground rules for whoever fixes them:
 
 ### B7. Race between the abandonment sweep and an in-flight turn
 
-- [ ] Fixed
+- [x] Fixed in acef69c
 - **Where:** `src/claims_service/intake/tasks.py` (`sweep_abandoned_conversations`, around lines 65–82); `src/claims_agent/engine/turns.py` (save at the end of the turn, around lines 144–145).
 - **Trigger:** the declarant speaks at 9:59 minutes of inactivity, the LLM takes 5 s and the sweep at 10:01 saves first. The turn's save raises `ConcurrentUpdateError`, the declarant hears "please repeat", and when they repeat the conversation is already closed. If the turn was a confirmation, a reference number is consumed (a gap in the sequence).
 - **Expected:** a conversation that is receiving a turn is not swept.
@@ -79,7 +79,7 @@ Ground rules for whoever fixes them:
 
 ### B8. Unbounded worst-case turn latency
 
-- [ ] Fixed
+- [x] Fixed in a90aa49
 - **Where:** `src/claims_agent/adapters/openrouter.py` (`TIMEOUT_SECONDS = 30`); `src/claims_agent/engine/turns.py` (`MAX_LLM_ROUNDS`, `LLM_RETRY_DELAYS`).
 - **Trigger:** 4 LLM rounds × 3 attempts × 30 s timeout ≈ 6 minutes for one turn. The consumer processes messages serially, so nothing else is handled meanwhile.
 - **Expected:** a per-turn deadline (e.g. 20–25 s) after which the bot apologises with the `technical_problem` template.
@@ -97,7 +97,7 @@ Ground rules for whoever fixes them:
 
 ### B10. An empty `end` in `loss_window` is rejected
 
-- [ ] Fixed
+- [x] Fixed in 40f05fd
 - **Where:** `src/claims_agent/domain/loss_window.py` (`parse_loss_window`, `raw.get("end") is not None`); `src/claims_agent/engine/tools.py` (`stated_values`, around lines 81–86, doesn't strip nested blanks).
 - **Trigger:** the tool schema marks `end` as required, so the model sends `{"start": "...T19:00", "end": ""}`. That raises a `FieldError` and counts a failed attempt.
 - **Fix:** treat a blank `end` as absent.
@@ -105,7 +105,7 @@ Ground rules for whoever fixes them:
 
 ### B11. One-character answers count as unintelligible
 
-- [ ] Fixed
+- [x] Fixed in ef391a9
 - **Where:** `src/claims_agent/engine/turns.py` (the `\w{2,}` check, around lines 61 and 89–91).
 - **Trigger:** "¿en qué kilómetro?" → "8". The bot asks to repeat, and the streak counts towards escalation.
 - **Fix:** accept any utterance with at least one word character.
@@ -113,7 +113,7 @@ Ground rules for whoever fixes them:
 
 ### B12. Consumer messages in English reach the declarant
 
-- [ ] Fixed
+- [x] Fixed in 7e3263c
 - **Where:** `src/claims_service/intake/consumers.py` (around lines 94, 140 and 145, e.g. "the conversation changed meanwhile…").
 - **Fix:** route them through the Spanish templates or `error_messages.py`.
 
@@ -143,7 +143,7 @@ Ground rules for whoever fixes them:
 
 ### T1. Unit tests need Django settings
 
-- [ ] Fixed
+- [x] Fixed in d994a85
 - **Problem:** `uv run pytest` without `--env-file .env` fails at startup with `RuntimeError: environment variable DJANGO_SECRET_KEY is required`, because pytest-django loads the settings globally, even for the pure domain tests.
 - **Fix:** give the test run a default secret key (pytest-django's `DJANGO_SETTINGS_MODULE` pointing to test settings, or an env default in `pyproject.toml`), so `uv run pytest` works out of the box.
 
@@ -161,7 +161,7 @@ Ground rules for whoever fixes them:
 
 ## Plan and documentation deviations
 
-- [ ] **D1.** `README.md` has no demo video URL, which is a deliverable in the assignment PDF. Add a placeholder section now.
+- [x] **D1.** (fixed in 9e5c646) `README.md` has no demo video URL, which is a deliverable in the assignment PDF. Add a placeholder section now.
 - [ ] **D2.** The abandonment sweep is a SELECT plus one conditional UPDATE per row (by version), not the single atomic UPDATE the plan describes. Either change the code or update `PLAN.md`.
 - [ ] **D3.** `scripts/chat.py` is not mentioned in the README.
 - [ ] **D4.** A failed summary task leaves no trace after 3 retries (no status, no explicit error log), and the LLM-written key points don't go through the hallucination checks.
