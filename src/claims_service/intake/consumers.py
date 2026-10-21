@@ -5,7 +5,12 @@ Client → server:
     {"type": "audio", "data": <base64 WAV>}                  a spoken utterance
     {"type": "text", "text": "...", "reply_audio": false}    a typed one (dev mode, evals)
 Server → client:
-    conversation_started, snapshot, transcript, bot_message, claim_updated, audio, error
+    conversation_started, snapshot, transcript, bot_message, claim_updated, audio,
+    audio_continued, error
+
+The speech of a turn's reply comes in chunks, one per sentence, each sent as soon as it is
+synthesized: `audio` carries the first one and starts a new reply, `audio_continued` the rest,
+to be played in order after it.
 
 Connecting to /ws/conversations/ starts a conversation (conversation_started carries its
 access token). Connecting to /ws/conversations/<id>/ resumes watching one: the first message
@@ -20,7 +25,7 @@ import asyncio
 import base64
 import binascii
 import logging
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, aclosing
 from typing import Any
 from uuid import UUID
 
@@ -85,7 +90,7 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
                 }
             )
             with self._trace("greeting"):
-                await self._send_turn(result, reply_audio=True)
+                await self._send_turn(result, reply_audio=True, greeting=True)
             return
         self._resume_id = conversation_id
         self._resume_deadline = asyncio.create_task(self._close_unless_resumed())
@@ -212,15 +217,29 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         self.conversation_id = conversation_id
         await self.channel_layer.group_add(group_name(conversation_id), self.channel_name)
 
-    async def _send_turn(self, result: TurnResult, *, reply_audio: bool) -> None:
+    async def _send_turn(
+        self, result: TurnResult, *, reply_audio: bool, greeting: bool = False
+    ) -> None:
         for reply in result.replies:
             await self.send_json(bot_message_event(reply))
         await self.send_json(claim_updated_event(result.conversation))
-        if reply_audio:
+        if not reply_audio:
+            return
+        if greeting:
+            # Nobody is waiting on an answer yet: the greeting is synthesized whole.
             wav = await self._services.voice.speak(result.replies)
             if wav is not None:
-                data = base64.b64encode(wav).decode("ascii")
-                await self.send_json({"type": "audio", "mime": "audio/wav", "data": data})
+                await self._send_audio("audio", wav)
+            return
+        kind = "audio"
+        async with aclosing(self._services.voice.speak_in_chunks(result.replies)) as chunks:
+            async for wav in chunks:
+                await self._send_audio(kind, wav)
+                kind = "audio_continued"
+
+    async def _send_audio(self, kind: str, wav: bytes) -> None:
+        data = base64.b64encode(wav).decode("ascii")
+        await self.send_json({"type": kind, "mime": "audio/wav", "data": data})
 
     async def _decode_audio(self, data: str) -> bytes | None:
         """The WAV bytes, or None after telling the client what was wrong."""

@@ -79,6 +79,7 @@ function onServerEvent(state: ConversationState, event: ServerEvent): Conversati
     case 'claim_updated':
       return { ...state, claim: event.claim, summary: event.summary, awaitingReply: false }
     case 'audio':
+    case 'audio_continued':
       return state
     case 'error':
       return { ...state, error: event.message, awaitingReply: false }

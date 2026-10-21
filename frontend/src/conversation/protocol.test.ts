@@ -37,6 +37,11 @@ describe('parseServerEvent', () => {
     })
   })
 
+  it.each(['audio', 'audio_continued'])('reads %s chunks of a reply', (type) => {
+    const audio = { type, mime: 'audio/wav', data: 'UklGRg==' }
+    expect(parseServerEvent(JSON.stringify(audio))).toEqual(audio)
+  })
+
   const badFields = [{ name: 'plate', state: 'maybe', value: null, error: null }]
 
   it.each([

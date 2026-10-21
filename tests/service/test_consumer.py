@@ -106,6 +106,24 @@ async def test_audio_turn_sends_the_transcript_then_the_spoken_reply(application
     await communicator.disconnect()
 
 
+async def test_a_reply_is_spoken_by_sentence_as_each_one_is_ready(application, llm, tts):
+    communicator, _ = await started_conversation(application)
+    llm.then(say("Gracias por la información. ¿Me indica su número de póliza?"))
+
+    await communicator.send_json_to({"type": "text", "text": "Hola", "reply_audio": True})
+    events = await receive_until(communicator, "audio_continued")
+
+    assert [e["type"] for e in events] == [
+        "bot_message",
+        "claim_updated",
+        "audio",
+        "audio_continued",
+    ]
+    assert tts.spoken[-2:] == ["Gracias por la información.", "¿Me indica su número de póliza?"]
+    assert await communicator.receive_nothing()
+    await communicator.disconnect()
+
+
 async def test_failed_transcription_asks_to_repeat(application, llm, stt):
     communicator, _ = await started_conversation(application)
     stt.transcripts.append(SpeechError("STT down"))

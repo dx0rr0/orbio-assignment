@@ -1,5 +1,6 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 
+import { AudioQueue } from './audio/queue'
 import { type AgentActivity, CallHeader } from './components/CallHeader'
 import { ClaimPanel } from './components/ClaimPanel'
 import { TalkButton } from './components/TalkButton'
@@ -12,30 +13,41 @@ const params = new URLSearchParams(window.location.search)
 const resumeId = params.get('conversation')
 const devMode = params.has('dev')
 
+/** Plays one WAV in the page; the returned function stops it. */
+function playWav(wav: Blob, done: () => void): () => void {
+  const url = URL.createObjectURL(wav)
+  const audio = new Audio(url)
+  let finished = false
+  const finish = () => {
+    if (finished) return
+    finished = true
+    URL.revokeObjectURL(url)
+    done()
+  }
+  audio.onended = finish
+  audio.play().catch(finish) // autoplay may be blocked
+  return () => {
+    finished = true
+    audio.pause()
+    URL.revokeObjectURL(url)
+  }
+}
+
 export default function App() {
-  const player = useRef<HTMLAudioElement | null>(null)
   const [speaking, setSpeaking] = useState(false)
   const [recording, setRecording] = useState(false)
+  const [queue] = useState(() => new AudioQueue(playWav, setSpeaking))
 
   const stopSpeaking = useCallback(() => {
-    player.current?.pause()
-    setSpeaking(false)
-  }, [])
+    queue.stop()
+  }, [queue])
 
-  const playAudio = useCallback((wav: Blob) => {
-    player.current?.pause()
-    const url = URL.createObjectURL(wav)
-    const audio = new Audio(url)
-    const done = () => {
-      URL.revokeObjectURL(url)
-      if (player.current === audio) setSpeaking(false)
-    }
-    audio.onended = done
-    audio.onpause = done
-    player.current = audio
-    setSpeaking(true)
-    audio.play().catch(done) // autoplay may be blocked
-  }, [])
+  const playAudio = useCallback(
+    (wav: Blob, startsReply: boolean) => {
+      queue.push(wav, startsReply)
+    },
+    [queue],
+  )
 
   const { state, sendAudio, sendText } = useConversation(resumeId, playAudio)
   const [micError, setMicError] = useState<string | null>(null)

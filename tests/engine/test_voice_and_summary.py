@@ -12,6 +12,7 @@ from claims_agent.domain import (
 from claims_agent.engine import BotMessage, Voice
 from claims_agent.engine.summary import RECORD_KEY_POINTS, SummaryError, summarize
 from claims_agent.engine.tools import CONFIRM_CLAIM, UPDATE_CLAIM
+from claims_agent.engine.voice import speech_chunks
 from claims_agent.ports import SpeechError
 from tests.engine.fakes import COMPLETE, LLM_DOWN, NOW, call, say
 
@@ -53,6 +54,58 @@ async def test_all_replies_of_a_turn_are_spoken_once_using_their_speech_text():
 
 async def test_failed_synthesis_gives_no_audio():
     assert await Voice(Speech(), Speech(fail=True)).speak([BotMessage("Hola")]) is None
+
+
+# --- speech by sentence -------------------------------------------------------------------
+
+
+def test_speech_is_cut_into_sentences_joining_short_pieces():
+    text = "Le leo los datos de la declaración: Declarante: María López. ¿Es todo correcto?"
+
+    assert speech_chunks(text) == [
+        "Le leo los datos de la declaración:",
+        "Declarante: María López. ¿Es todo correcto?",
+    ]
+
+
+def test_a_short_last_piece_joins_the_chunk_before_it():
+    assert speech_chunks("Muy bien, gracias por esperar. Bien.") == [
+        "Muy bien, gracias por esperar. Bien."
+    ]
+    assert speech_chunks("Hola.") == ["Hola."]
+    assert speech_chunks("  ") == []
+
+
+def test_times_and_spelled_identifiers_are_not_cut():
+    assert speech_chunks("Fue a las 19:00, póliza A U T, 4 8 2 1.") == [
+        "Fue a las 19:00, póliza A U T, 4 8 2 1."
+    ]
+
+
+async def test_replies_are_spoken_by_sentence_in_order():
+    tts = Speech()
+    replies = [
+        BotMessage("Si hay alguien herido, llame al 112."),
+        BotMessage("¿Dónde ocurrió el siniestro?"),
+    ]
+
+    chunks = [wav async for wav in Voice(Speech(), tts).speak_in_chunks(replies)]
+
+    assert chunks == [b"wav", b"wav"]
+    assert sorted(tts.texts) == sorted(
+        ["Si hay alguien herido, llame al 112.", "¿Dónde ocurrió el siniestro?"]
+    )
+
+
+async def test_failed_synthesis_ends_the_spoken_chunks():
+    chunks = [
+        wav
+        async for wav in Voice(Speech(), Speech(fail=True)).speak_in_chunks(
+            [BotMessage("Hola, buenas tardes.")]
+        )
+    ]
+
+    assert chunks == []
 
 
 # --- turn result --------------------------------------------------------------------------
