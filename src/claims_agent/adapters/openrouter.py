@@ -23,9 +23,11 @@ CHAT_MODEL = "google/gemini-3.1-flash-lite"
 # before the first token of the answer.
 CHAT_REASONING_EFFORT: ReasoningEffort = "none"
 STT_MODEL = "microsoft/mai-transcribe-2"
-TTS_MODEL = "google/gemini-3.8-flash-lite-tts"
-TTS_VOICE = "Kore"
-# Gemini TTS only returns raw PCM: 16-bit mono at this rate.
+# About 1.5 s sooner to the whole reply than Gemini 3.8 Flash Lite TTS, and the locale of the
+# voice gives it a Spain accent.
+TTS_MODEL = "microsoft/mai-voice-2.1-flash"
+TTS_VOICE = "es-ES-Marta:MAI-Voice-2.1-Flash"
+# Asked for raw PCM (no decoding on the server): 16-bit mono at this rate.
 TTS_SAMPLE_RATE = 24_000
 TIMEOUT_SECONDS = 30.0
 # Per chat request; the engine also bounds the whole turn (TURN_DEADLINE_SECONDS).

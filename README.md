@@ -94,7 +94,7 @@ All three go through OpenRouter, each behind a port:
 
 - LLM: `google/gemini-3.1-flash-lite`, chat completions with tools, no reasoning (the fastest of the models measured for a turn, with the same extraction).
 - STT: `microsoft/mai-transcribe-2`. In the spike it transcribed all nine recorded utterances correctly, including policy numbers and plates. The one miss was a run of zeros ("AUT-00000001" lost a digit), so the seeded policy numbers avoid them.
-- TTS: `google/gemini-3.8-flash-lite-tts`. It only returns raw 24 kHz PCM, which the adapter wraps as WAV. Its output was checked by transcribing it back: identifiers, dates and the reference come back exactly.
+- TTS: `microsoft/mai-voice-2.1-flash` with the `es-ES-Marta` voice (Spain accent), about 1.5 s faster to the whole reply than `google/gemini-3.8-flash-lite-tts`. It is asked for raw 24 kHz PCM, which the adapter wraps as WAV.
 
 ## Potential improvements
 
