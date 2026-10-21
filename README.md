@@ -4,6 +4,10 @@ A voice agent that takes the first notice of loss for a fictional car insurer (*
 
 The vocabulary (loss, claim, declarant, loss window…) is defined in [GLOSSARY.md](GLOSSARY.md), the agreed scope in [docs/PLAN.md](docs/PLAN.md) and the architectural decisions in [docs/adr](docs/adr).
 
+## Demo
+
+Video walkthrough: _link to be added_ (happy path, a correction during the read-back, and a loss outside the coverage period).
+
 ## Running it
 
 You need Docker and an [OpenRouter](https://openrouter.ai) API key. Langfuse is optional.
