@@ -38,8 +38,8 @@ Single turns: a claim state plus the declarant's next utterance, taken from the 
 
 ## Budget
 
-- **$0.70 in total** (raised from $0.30, then $0.40 and $0.60, on 2026-10-21), on an OpenRouter key used only for evals.
-- Pilot ≤ $0.01 to measure the real cost of one case. The rest goes to the baseline and the rounds; the runner stops by itself at $0.68.
+- **$0.80 in total** (raised from $0.30, then $0.40, $0.60 and $0.70, on 2026-10-21), on an OpenRouter key used only for evals.
+- Pilot ≤ $0.01 to measure the real cost of one case. The rest goes to the baseline and the rounds; the runner stops by itself at $0.78.
 - If the pilot shows fewer than 4 rounds fit, the runner replays recorded stages that a round's change doesn't touch (with their measured times) instead of paying for them again.
 
 ## Order

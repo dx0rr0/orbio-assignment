@@ -26,6 +26,22 @@ def _starts_with(prefix: str) -> Callable[[Any], bool]:
     return check
 
 
+def _location_in(municipality: str) -> Callable[[Any], bool]:
+    def check(value: Any) -> bool:
+        return getattr(value, "municipality", None) == municipality
+
+    check.__name__ = f"in {municipality!r}"
+    return check
+
+
+def _not_mentioning(word: str) -> Callable[[Any], bool]:
+    def check(value: Any) -> bool:
+        return isinstance(value, str) and word.lower() not in value.lower()
+
+    check.__name__ = f"not mentioning {word!r}"
+    return check
+
+
 SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         name="happy_path_broken_glass",
@@ -63,6 +79,26 @@ SCENARIOS: tuple[Scenario, ...] = (
             "other_vehicle_plate": "2548MNP",
             "friendly_report_signed": True,
             "urgency": "high",
+        },
+    ),
+    Scenario(
+        name="location_corrected_in_read_back",
+        persona=(
+            "Eres María López Fernández, titular de la póliza AUT-48213907, coche con "
+            "matrícula 4721 KLM. Ayer sobre las seis de la tarde, conduciendo tú, un coche te "
+            "dio por detrás en un semáforo de la calle Madrid, en Leganés (Madrid). Cuando te "
+            "pregunten qué pasó, lo cuentas todo en una sola frase: la hora, el semáforo, la "
+            "calle, el municipio y el golpe; pero te equivocas y dices Getafe en vez de "
+            "Leganés. No te das cuenta hasta que el "
+            "asistente te lee todos los datos al final: entonces corriges que no fue en Getafe, "
+            "sino en Leganés, y cuando te los vuelve a leer, confirmas. La matrícula del otro coche "
+            "es 9132 JKL y firmasteis el parte amistoso. Nadie herido, el coche funciona."
+        ),
+        status=ClaimStatus.CONFIRMED,
+        expect={
+            "loss_type": LossType.COLLISION,
+            "loss_location": _location_in("Leganés"),
+            "description": _not_mentioning("Getafe"),
         },
     ),
     Scenario(

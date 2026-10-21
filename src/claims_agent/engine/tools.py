@@ -56,7 +56,13 @@ _CLAIM_PROPERTIES: dict[str, dict[str, Any]] = {
         },
         "required": ["municipality", "province", "country"],
     },
-    "description": {**_TEXT, "description": "What happened, in the declarant's words, summarized"},
+    "description": {
+        **_TEXT,
+        "description": (
+            "What happened, in the declarant's words, summarized. Only the events: not the "
+            "place or the time, which have their own fields."
+        ),
+    },
     "injuries": {**_BOOL, "description": "Whether anyone was injured"},
     "vehicle_immobilized": {**_BOOL, "description": "Whether the insured vehicle cannot be driven"},
     "other_vehicle_involved": {**_BOOL, "description": "Collision only"},
