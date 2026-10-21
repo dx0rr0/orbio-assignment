@@ -271,3 +271,12 @@ def test_complete_claim_scenario_with_collision_and_other_driver():
     assert claim.status is ClaimStatus.PENDING_CONFIRMATION
     assert claim.loss_type is LossType.COLLISION
     assert claim.urgency == "medium"
+
+
+def test_a_failure_already_counted_is_recorded_but_not_counted_again():
+    claim = update(plate="no la sé").claim
+    result = apply_update(
+        claim, {"plate": "tampoco"}, policy=None, now=NOW, already_failed={"plate"}
+    )
+    assert result.claim.failed_attempts == {"plate": 1}
+    assert result.rejected.keys() == {"plate"}

@@ -4,7 +4,7 @@ This is the only place a claim changes: the LLM proposes values, these functions
 is valid, when the claim is complete, and when it closes (ADR-0002).
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -109,12 +109,19 @@ def _inapplicable_fields(claim: Claim) -> set[str]:
 
 
 def apply_update(
-    claim: Claim, proposed: Mapping[str, Any], *, policy: Policy | None, now: datetime
+    claim: Claim,
+    proposed: Mapping[str, Any],
+    *,
+    policy: Policy | None,
+    now: datetime,
+    already_failed: Collection[str] = (),
 ) -> UpdateResult:
     """Validate `proposed` field values and apply the valid ones.
 
     `policy` must be the policy for `policy_number_to_look_up(claim, proposed)`, or None if
-    there is no such policy. `now` must be timezone-aware.
+    there is no such policy. `now` must be timezone-aware. A failure of a field in
+    `already_failed` is recorded but not counted again: attempts are counted per declarant
+    answer, and the LLM may send one answer several times.
     """
     if claim.status.is_final:
         raise ClaimClosedError(f"claim is {claim.status}")
@@ -155,7 +162,8 @@ def apply_update(
     for name, message in errors.items():
         if name in CLAIM_FIELDS:
             field_errors[name] = message
-            failed_attempts[name] = failed_attempts.get(name, 0) + 1
+            if name not in already_failed:
+                failed_attempts[name] = failed_attempts.get(name, 0) + 1
 
     updated = claim.model_copy(
         update=values | {"field_errors": field_errors, "failed_attempts": failed_attempts}

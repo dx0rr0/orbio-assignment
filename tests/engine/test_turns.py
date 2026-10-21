@@ -445,3 +445,28 @@ async def test_validation_is_traced_with_the_stated_values(engine, llm, telemetr
     await engine.handle_text(conversation_id, "AUT 48213907, 4721 KLM")
 
     assert telemetry.spans == [("validation", IDENTIFICATION)]
+
+
+# --- counting per declarant turn ----------------------------------------------------------
+
+
+async def test_a_value_retried_within_one_turn_fails_once(engine, llm, conversation_id):
+    bad_plate = call(UPDATE_CLAIM, IDENTIFICATION | {"plate": "9999 ZZZ"})
+    llm.then(bad_plate, bad_plate, bad_plate, say("La matrícula no coincide. ¿Me la repite?"))
+
+    result = await engine.handle_text(conversation_id, "AUT 48213907, la 9999 ZZZ")
+
+    claim = result.conversation.claim
+    assert claim.status is ClaimStatus.IN_PROGRESS
+    assert claim.failed_attempts == {"plate": 1}
+
+
+async def test_two_refusals_in_one_response_count_once(engine, llm, conversation_id):
+    refusal = call(DECLARANT_REFUSES, {"field": "declarant_name"})
+    llm.then(calls(refusal, refusal), say("Lo necesito para tramitar el parte. ¿Me lo dice?"))
+
+    result = await engine.handle_text(conversation_id, "No le voy a decir mi nombre")
+
+    assert result.conversation.claim.status is ClaimStatus.IN_PROGRESS
+    assert result.conversation.refusals == {"declarant_name": 1}
+    assert texts(result) == ["Lo necesito para tramitar el parte. ¿Me lo dice?"]
