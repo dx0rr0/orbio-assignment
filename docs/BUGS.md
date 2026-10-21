@@ -42,6 +42,7 @@ Ground rules for whoever fixes them:
 ### B4. An irreversible `not_covered` is decided on an unconfirmed value
 
 - [ ] Fixed
+- **Status (2026-10-21):** waiting for the product decision. Recommendation: option (a). The claim stays `in_progress` with the offending field marked; a template states the value and the policy dates ("Me indica que ocurrió el 13 de octubre, y su póliza empezó el 17. ¿Es correcta la fecha?"); the claim closes only when the declarant confirms that value, and a correction re-evaluates it. Option (b) makes the declarant finish the whole interview before hearing the loss isn't covered.
 - **Where:** `src/claims_agent/domain/lifecycle.py` (`_next_status`, around lines 180–187).
 - **Trigger:** the LLM resolves "el martes pasado" to the wrong year, or the STT mishears the municipality as one abroad. The claim jumps straight to `not_covered`, a final status, and the declarant can't correct it.
 - **Expected:** the declarant gets a chance to correct the value that makes the claim not covered before it closes.
@@ -89,6 +90,7 @@ Ground rules for whoever fixes them:
 ### B9. Lifecycle of the HTTP clients
 
 - [ ] Fixed
+- **Status (2026-10-21):** deferred: the speech clients belong to the voice pipeline being redesigned; fix it there.
 - **Where:** `src/claims_agent/adapters/openrouter.py` (around line 94, `httpx.AsyncClient` never closed); `src/claims_service/intake/tasks.py` (around line 43, a new client per task).
 - **Expected:** one client per process, closed on shutdown.
 - **Fix:** create the clients once (module-level factory or app/worker startup) and close them on ASGI lifespan shutdown and Celery `worker_shutdown`.
@@ -122,6 +124,7 @@ Ground rules for whoever fixes them:
 ### S1. No authentication on conversations
 
 - [ ] Fixed
+- **Status (2026-10-21):** waiting for the product decision. Recommendation: serve the listing only when `DEBUG` is on (no Django auth in v0); issue a random token with `conversation_started`, store only its hash on the conversation, and require it to resume over WebSocket and on `GET /api/conversations/<id>`; the frontend keeps it in `sessionStorage` next to `?conversation=`. Open question: may resuming from another browser or device stop working?
 - **Where:** `src/claims_service/intake/api.py` (around lines 24–35); `src/claims_service/intake/consumers.py` (around lines 57–63).
 - **Problem:** the API lists every conversation with personal data (names, plates, transcripts). With those ids anyone can connect to `/ws/conversations/<id>/` and inject turns into someone else's conversation.
 - **Fix for v0:** remove or protect the listing endpoint (staff-only via Django auth, or a setting that disables it outside debug). Issue an unguessable per-conversation token when the conversation is created, and require it on the WebSocket. Document real authentication as an improvement.
@@ -135,6 +138,7 @@ Ground rules for whoever fixes them:
 ### S3. Cost amplification and input sizes
 
 - [ ] Fixed
+- **Status (2026-10-21):** text length capped in 847f4ad. Greeting audio cache, `--ws-max-size`, WAV header check and rejecting text outside dev mode are left to the voice pipeline redesign; a per-IP rate limit is still open.
 - **Where:** `src/claims_service/intake/consumers.py` (around lines 48–55: each connection creates a row and synthesizes the greeting; around lines 75–78: no text length limit).
 - **Problems:** no rate limit; text messages have no length limit and are accepted even outside dev mode; the 3 M-character audio limit is checked after uvicorn has already accepted frames of up to 16 MB (its default `ws_max_size`); the payload is not checked to be a WAV.
 - **Fix:** cache the greeting audio (it is constant); cap the text length and reject text messages unless dev mode is on; set uvicorn's `--ws-max-size` to the audio limit; check the WAV header; add a simple per-IP connection rate limit.
@@ -150,18 +154,19 @@ Ground rules for whoever fixes them:
 ### T2. Fragile e2e wait
 
 - [ ] Fixed
+- **Status (2026-10-21):** deferred: the audio events of a turn change with the voice pipeline redesign.
 - **Where:** `tests/e2e/test_voice_scenarios.py` (`turn()`, around line 34).
 - **Problem:** it always waits for an `audio` event, so a TTS failure becomes a 90 s timeout instead of a clear failure.
 - **Fix:** wait for the end-of-turn event and assert on the audio separately.
 
 ### T3. Missing type checking in CI
 
-- [ ] Fixed
+- [x] Fixed in 7dbe8b3
 - **Fix:** add `mypy` or `pyright` to the dev group and to `.github/workflows/ci.yml`; the code is fully annotated but nothing checks it.
 
 ## Plan and documentation deviations
 
 - [x] **D1.** (fixed in 9e5c646) `README.md` has no demo video URL, which is a deliverable in the assignment PDF. Add a placeholder section now.
-- [ ] **D2.** The abandonment sweep is a SELECT plus one conditional UPDATE per row (by version), not the single atomic UPDATE the plan describes. Either change the code or update `PLAN.md`.
-- [ ] **D3.** `scripts/chat.py` is not mentioned in the README.
-- [ ] **D4.** A failed summary task leaves no trace after 3 retries (no status, no explicit error log), and the LLM-written key points don't go through the hallucination checks.
+- [x] **D2.** (fixed in 286dea2) The abandonment sweep is a SELECT plus one conditional UPDATE per row (by version), not the single atomic UPDATE the plan describes. Either change the code or update `PLAN.md`.
+- [x] **D3.** (fixed in 286dea2) `scripts/chat.py` is not mentioned in the README.
+- [x] **D4.** (fixed in 3421533) A failed summary task leaves no trace after 3 retries (no status, no explicit error log), and the LLM-written key points don't go through the hallucination checks.
