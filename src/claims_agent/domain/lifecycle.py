@@ -53,10 +53,9 @@ def _text(min_length: int) -> Callable[[object], str]:
 
 
 def _loss_type(raw: object) -> LossType:
-    try:
+    if isinstance(raw, str) and raw in LossType:
         return LossType(raw)
-    except ValueError:
-        raise FieldError(f"must be one of: {', '.join(LossType)}") from None
+    raise FieldError(f"must be one of: {', '.join(LossType)}")
 
 
 _PARSERS: dict[str, Callable[[object], Any]] = {

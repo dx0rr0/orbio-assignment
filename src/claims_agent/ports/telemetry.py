@@ -4,7 +4,8 @@ from typing import Any, Protocol
 
 
 class Span(Protocol):
-    def update(self, *, output: Any = None, metadata: Any = None) -> None: ...
+    # The result is ignored (Langfuse's spans return themselves).
+    def update(self, *, output: Any = None, metadata: Any = None) -> object: ...
 
 
 class Telemetry(Protocol):

@@ -3,7 +3,7 @@
 import io
 import wave
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import openai
@@ -74,8 +74,11 @@ class OpenRouterChatModel:
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,
-                messages=[{"role": "system", "content": system}, *map(_to_openai, messages)],
-                tools=list(tools),
+                # Built as plain dicts; the SDK's TypedDicts add nothing but casts here.
+                messages=cast(
+                    Any, [{"role": "system", "content": system}, *map(_to_openai, messages)]
+                ),
+                tools=cast(Any, list(tools)),
                 temperature=0.3,
             )
         except openai.OpenAIError as error:

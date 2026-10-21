@@ -40,9 +40,10 @@ async def main(utterances: list[str]) -> None:
             except EOFError:
                 break
         else:
-            utterance = next(lines, None)
-            if utterance is None:
+            line = next(lines, None)
+            if line is None:
                 break
+            utterance = line
             print(f"\nTÚ> {utterance}")
         result = await engine.handle_text(conversation_id, utterance)
         show(result)

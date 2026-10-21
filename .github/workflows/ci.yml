@@ -30,6 +30,7 @@ jobs:
       - run: uv sync --frozen
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      - run: uv run mypy
       # e2e tests need real providers and the running stack; they are excluded by default.
       - run: uv run pytest
 

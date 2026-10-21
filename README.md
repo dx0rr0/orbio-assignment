@@ -59,6 +59,7 @@ uv sync
 docker compose up -d db                       # the service tests use Postgres
 uv run --env-file .env pytest                 # unit, engine and service tests
 uv run pytest tests/unit tests/engine         # no .env or database needed
+uv run mypy                                   # type checks (src, evals, scripts)
 uv run --env-file .env pytest -m e2e          # needs the whole stack up and real providers
 uv run --env-file .env python -m evals.run    # LLM-simulated declarants
 uv run --env-file .env python scripts/chat.py # talk to the engine in text, real LLM, no database
