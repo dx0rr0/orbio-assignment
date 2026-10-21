@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from claims_agent.domain import MADRID, Message, ToolCall
-from claims_agent.ports import Completion, LLMError, NullTelemetry, Span
+from claims_agent.ports import Completion, LLMError, NullTelemetry, Span, ToolSpec
 from claims_agent.seed import seed_policies
 
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=MADRID)
@@ -63,7 +63,7 @@ class ScriptedLLM:
         return self
 
     async def complete(
-        self, *, system: str, messages: Sequence[Message], tools: Sequence[Mapping[str, Any]]
+        self, *, system: str, messages: Sequence[Message], tools: Sequence[ToolSpec]
     ) -> Completion:
         self.requests.append({"system": system, "messages": list(messages), "tools": tools})
         if not self.script:

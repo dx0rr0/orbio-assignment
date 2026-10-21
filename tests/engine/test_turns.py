@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from claims_agent.domain import ClaimStatus, ClosureReason, Role, close
+from claims_agent.domain import CLAIM_FIELDS, ClaimStatus, ClosureReason, Role, close
 from claims_agent.engine import ConversationEngine, templates, tools
 from claims_agent.engine.tools import CONFIRM_CLAIM, CONFIRM_VALUE, DECLARANT_REFUSES, UPDATE_CLAIM
 from claims_agent.engine.turns import MAX_LLM_FAILURES, MAX_REPEAT_REQUESTS
@@ -473,6 +473,11 @@ async def test_blank_proposals_are_not_stated_values(engine, llm, conversation_i
     assert claim.field_errors == {}
     assert claim.failed_attempts == {}
     assert claim.injuries is None
+
+
+def test_the_update_tool_has_a_property_for_every_claim_field_and_no_other():
+    [update] = [t for t in tools.TOOLS if t["function"]["name"] == UPDATE_CLAIM]
+    assert set(update["function"]["parameters"]["properties"]) == set(CLAIM_FIELDS)
 
 
 def test_every_claim_field_can_be_declared_unstated():

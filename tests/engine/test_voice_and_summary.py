@@ -1,6 +1,14 @@
 import pytest
 
-from claims_agent.domain import Claim, ClaimStatus, Conversation, Message, Role, Urgency
+from claims_agent.domain import (
+    Claim,
+    ClaimStatus,
+    Conversation,
+    IncompleteClaimError,
+    Message,
+    Role,
+    Urgency,
+)
 from claims_agent.engine import BotMessage, Voice
 from claims_agent.engine.summary import RECORD_KEY_POINTS, SummaryError, summarize
 from claims_agent.engine.tools import CONFIRM_CLAIM, UPDATE_CLAIM
@@ -113,3 +121,13 @@ async def test_unusable_summaries_raise(llm, completion):
 
     with pytest.raises(SummaryError):
         await summarize(llm, confirmed_conversation())
+
+
+async def test_a_claim_without_the_data_urgency_needs_is_not_summarized(llm):
+    conversation = confirmed_conversation()
+    undecided = conversation.claim.model_copy(update={"injuries": None})
+
+    with pytest.raises(IncompleteClaimError, match="urgency"):
+        await summarize(llm, conversation.model_copy(update={"claim": undecided}))
+
+    assert llm.requests == []

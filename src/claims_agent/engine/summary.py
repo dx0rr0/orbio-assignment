@@ -4,12 +4,19 @@ claim and the transcript; urgency and next steps decided by code."""
 import json
 from collections.abc import Sequence
 
-from claims_agent.domain import ClaimSummary, Conversation, Message, Role, ToolCall
+from claims_agent.domain import (
+    ClaimSummary,
+    Conversation,
+    IncompleteClaimError,
+    Message,
+    Role,
+    ToolCall,
+)
 from claims_agent.domain.next_steps import next_steps
-from claims_agent.ports import ChatModel, LLMError
+from claims_agent.ports import ChatModel, LLMError, ToolSpec
 
 RECORD_KEY_POINTS = "record_key_points"
-_TOOL = {
+_TOOL: ToolSpec = {
     "type": "function",
     "function": {
         "name": RECORD_KEY_POINTS,
@@ -42,7 +49,12 @@ class SummaryError(RuntimeError):
 
 
 async def summarize(llm: ChatModel, conversation: Conversation) -> ClaimSummary:
+    """Raises `IncompleteClaimError` if the claim lacks the data urgency is decided from (a
+    confirmed claim never does)."""
     claim = conversation.claim
+    urgency = claim.urgency
+    if urgency is None:
+        raise IncompleteClaimError("urgency needs injuries and vehicle_immobilized")
     transcript = "\n".join(
         f"{'Declarante' if m.role is Role.USER else 'Agente'}: {m.content}"
         for m in conversation.transcript
@@ -60,8 +72,7 @@ async def summarize(llm: ChatModel, conversation: Conversation) -> ClaimSummary:
         raise SummaryError(str(error)) from error
 
     key_points = _key_points(completion.tool_calls)
-    assert claim.urgency is not None, "a confirmed claim has all the data urgency needs"
-    return ClaimSummary(key_points=key_points, urgency=claim.urgency, next_steps=next_steps(claim))
+    return ClaimSummary(key_points=key_points, urgency=urgency, next_steps=next_steps(claim))
 
 
 def _key_points(tool_calls: Sequence[ToolCall]) -> tuple[str, ...]:

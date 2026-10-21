@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from claims_agent.domain import CLAIM_FIELDS, LossType
+from claims_agent.ports import ToolSpec
 
 UPDATE_CLAIM = "update_claim"
 CONFIRM_CLAIM = "confirm_claim"
@@ -17,7 +18,8 @@ _DATETIME = {
     "description": "ISO 8601 local datetime in Europe/Madrid, e.g. 2026-10-19T19:00",
 }
 
-_CLAIM_PROPERTIES: dict[str, Any] = {
+# JSON Schema of each claim field.
+_CLAIM_PROPERTIES: dict[str, dict[str, Any]] = {
     "policy_number": {**_TEXT, "description": "As said by the declarant, e.g. AUT-48213907"},
     "plate": {**_TEXT, "description": "Plate of the insured vehicle, e.g. 4721 KLM"},
     "declarant_name": {**_TEXT, "description": "Full name of the person talking to you"},
@@ -63,7 +65,6 @@ _CLAIM_PROPERTIES: dict[str, Any] = {
     },
     "police_report_filed": {**_BOOL, "description": "Theft only: whether it was reported"},
 }
-assert set(_CLAIM_PROPERTIES) == set(CLAIM_FIELDS)
 
 
 def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
@@ -87,7 +88,7 @@ def stated_values(proposed: Mapping[str, Any]) -> dict[str, Any]:
     return {name: value for name, value in proposed.items() if not blank(value)}
 
 
-TOOLS: tuple[dict[str, Any], ...] = (
+TOOLS: tuple[ToolSpec, ...] = (
     {
         "type": "function",
         "function": {

@@ -233,7 +233,8 @@ class ConversationEngine:
 
     async def _script(self, claim: Claim) -> BotMessage:
         if claim.status is ClaimStatus.CONFIRMED:
-            assert claim.reference
+            if claim.reference is None:
+                raise ValueError("a confirmed claim always has a reference")
             return templates.confirmed(claim.reference)
         if claim.status is ClaimStatus.PENDING_CONFIRMATION:
             return templates.read_back(claim)
@@ -293,17 +294,20 @@ class ConversationEngine:
     async def _complete(self, conversation: Conversation, now: datetime) -> Completion:
         claim = conversation.claim
         system = system_prompt(claim, await self._policy_of(claim), now)
-        for attempt, delay in enumerate((*LLM_RETRY_DELAYS, None), start=1):
+        delays = iter(LLM_RETRY_DELAYS)
+        attempt = 0
+        while True:
+            attempt += 1
             try:
                 return await self._llm.complete(
                     system=system, messages=conversation.messages, tools=tools.TOOLS
                 )
             except LLMError as error:
                 logger.warning("LLM call failed (attempt %d): %s", attempt, error)
+                delay = next(delays, None)
                 if delay is None:
                     raise _LLMUnavailableError(conversation) from error
                 await self._sleep(delay)
-        raise AssertionError("unreachable")
 
     # --- tools ----------------------------------------------------------------------------
 

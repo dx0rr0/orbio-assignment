@@ -1,6 +1,8 @@
 from datetime import datetime
 
-from claims_agent.domain import MADRID, Claim, LossWindow, apply_update
+import pytest
+
+from claims_agent.domain import MADRID, Claim, IncompleteClaimError, LossWindow, apply_update
 from claims_agent.engine.templates import (
     confirm_coverage_value,
     display_plate,
@@ -66,3 +68,15 @@ def test_a_loss_abroad_is_stated_back_before_closing():
 
     assert "Oporto (Portugal)" in text
     assert "¿Es correcto el lugar?" in text
+
+
+def test_an_incomplete_claim_is_not_read_back():
+    with pytest.raises(IncompleteClaimError, match="missing"):
+        read_back(Claim(plate="4721KLM"))
+
+
+def test_without_a_coverage_issue_there_is_no_value_to_confirm():
+    claim = apply_update(Claim(), COMPLETE, policy=HAPPY_POLICY, now=NOW).claim
+
+    with pytest.raises(ValueError, match="nothing to confirm"):
+        confirm_coverage_value(claim, HAPPY_POLICY)
