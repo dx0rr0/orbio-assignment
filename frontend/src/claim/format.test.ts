@@ -52,4 +52,16 @@ describe('formatValue', () => {
     })
     expect(range).toBe('13 oct 2026, 22:00 – 14 oct 2026, 8:00')
   })
+
+  it('shows values of an unexpected shape as they came instead of failing', () => {
+    expect(formatValue('loss_type', 'meteor')).toBe('meteor')
+    expect(formatValue('loss_type', 3)).toBe('3')
+    expect(formatValue('loss_window', { start: 'yesterday', end: 'today' })).toBe(
+      '{"start":"yesterday","end":"today"}',
+    )
+    expect(formatValue('loss_window', '2026-10-19')).toBe('2026-10-19')
+    expect(formatValue('loss_location', { municipality: 'Valencia' })).toBe(
+      '{"municipality":"Valencia"}',
+    )
+  })
 })

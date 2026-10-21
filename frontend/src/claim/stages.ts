@@ -1,7 +1,7 @@
 /** The claim panel's stages: the claim's required fields grouped as the agent asks them. */
 
 import type { ClaimField, ClaimView } from '../conversation/protocol'
-import { FIELD_LABELS, formatValue } from './format'
+import { FIELD_LABELS, LossLocation, formatValue } from './format'
 
 export type StageState = 'done' | 'error' | 'pending'
 
@@ -48,7 +48,7 @@ const GROUPS: Group[] = [
       [
         formatValue('loss_type', v.loss_type),
         formatValue('loss_window', v.loss_window),
-        (v.loss_location as { municipality: string }).municipality,
+        municipality(v.loss_location),
       ].join(' · '),
   },
   {
@@ -76,6 +76,11 @@ const GROUPS: Group[] = [
     summary: (v) => (v.police_report_filed ? 'Denuncia presentada' : 'Sin denuncia'),
   },
 ]
+
+function municipality(location: unknown): string {
+  const parsed = LossLocation.safeParse(location)
+  return parsed.success ? parsed.data.municipality : formatValue('loss_location', location)
+}
 
 function fieldLine(field: ClaimField): StageLine {
   const label = FIELD_LABELS[field.name] ?? field.name

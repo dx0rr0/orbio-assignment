@@ -1,5 +1,7 @@
 /** Spanish labels and display values for the claim panel. */
 
+import { z } from 'zod'
+
 export const FIELD_LABELS: Record<string, string> = {
   policy_number: 'Póliza',
   plate: 'Matrícula',
@@ -57,17 +59,18 @@ const dateTime = new Intl.DateTimeFormat('es-ES', {
   timeZone: 'Europe/Madrid',
 })
 
-interface LossWindow {
-  start: string
-  end: string
-}
+// Field values come from the server; these are the structured ones it sends.
+const LossWindow = z.object({
+  start: z.iso.datetime({ offset: true }),
+  end: z.iso.datetime({ offset: true }),
+})
 
-interface LossLocation {
-  way: string | null
-  municipality: string
-  province: string
-  country: string
-}
+export const LossLocation = z.object({
+  way: z.string().nullable(),
+  municipality: z.string(),
+  province: z.string(),
+  country: z.string(),
+})
 
 /** Current Spanish plates ('8305HJT') are written '8305 HJT'; others stay as they are. */
 export function displayPlate(plate: string): string {
@@ -82,17 +85,26 @@ export function formatValue(name: string, value: unknown): string {
     case 'other_vehicle_plate':
       return displayPlate(String(value))
     case 'loss_type':
-      return LOSS_TYPES[value as string] ?? String(value)
+      return (typeof value === 'string' && LOSS_TYPES[value]) || String(value)
     case 'loss_window': {
-      const { start, end } = value as LossWindow
+      const lossWindow = LossWindow.safeParse(value)
+      if (!lossWindow.success) return asText(value)
+      const { start, end } = lossWindow.data
       const from = dateTime.format(new Date(start))
       return start === end ? from : `${from} – ${dateTime.format(new Date(end))}`
     }
     case 'loss_location': {
-      const { way, municipality, province, country } = value as LossLocation
+      const location = LossLocation.safeParse(value)
+      if (!location.success) return asText(value)
+      const { way, municipality, province, country } = location.data
       return [way, municipality, province, country].filter(Boolean).join(', ')
     }
     default:
-      return String(value)
+      return asText(value)
   }
+}
+
+/** A value of an unexpected shape, shown as it came rather than as '[object Object]'. */
+function asText(value: unknown): string {
+  return typeof value === 'object' ? JSON.stringify(value) : String(value)
 }

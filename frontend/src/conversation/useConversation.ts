@@ -2,7 +2,7 @@ import { useCallback, useEffect, useReducer, useRef } from 'react'
 
 import { toBase64 } from '../audio/wav'
 import { resumeMessage, saveToken, socketUrl } from './access'
-import type { ClientMessage, ServerEvent } from './protocol'
+import { type ClientMessage, parseServerEvent } from './protocol'
 import { initialState, reducer } from './state'
 
 const session = () => window.sessionStorage
@@ -26,8 +26,13 @@ export function useConversation(resumeId: string | null, playAudio: (wav: Blob) 
       dispatch({ type: 'connection', connection: 'open' })
     }
     ws.onclose = () => dispatch({ type: 'connection', connection: 'closed' })
-    ws.onmessage = (message: MessageEvent<string>) => {
-      const event = JSON.parse(message.data) as ServerEvent
+    ws.onmessage = (message: MessageEvent<unknown>) => {
+      const event = parseServerEvent(message.data)
+      if (event === null) {
+        // A newer or broken backend: skip what this page can't show rather than crash.
+        console.warn('Ignoring an unexpected message from the server', message.data)
+        return
+      }
       if (event.type === 'conversation_started') {
         saveToken(session, event.conversation_id, event.token)
       }
