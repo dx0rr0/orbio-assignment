@@ -10,6 +10,9 @@ UPDATE_CLAIM = "update_claim"
 CONFIRM_CLAIM = "confirm_claim"
 CONFIRM_VALUE = "declarant_confirms_value"
 DECLARANT_REFUSES = "declarant_refuses_field"
+# An argument of UPDATE_CLAIM that is not a claim field: the reply to say if every value is
+# accepted, which saves asking the LLM again once the tool has run.
+REPLY_IF_ACCEPTED = "reply_if_accepted"
 
 _BOOL = {"type": "boolean"}
 _TEXT = {"type": "string"}
@@ -101,7 +104,19 @@ TOOLS: tuple[ToolSpec, ...] = (
             ),
             "parameters": {
                 "type": "object",
-                "properties": {name: _nullable(s) for name, s in _CLAIM_PROPERTIES.items()},
+                "properties": {
+                    **{name: _nullable(s) for name, s in _CLAIM_PROPERTIES.items()},
+                    REPLY_IF_ACCEPTED: {
+                        "type": ["string", "null"],
+                        "description": (
+                            "What you would say next to the declarant if every value you send "
+                            "is accepted: usually the question for the next missing field, plus "
+                            "a short answer to anything they asked. It is said as written, "
+                            "without asking you again. If any value is rejected it is not said, "
+                            "and you get the result to reply to."
+                        ),
+                    },
+                },
                 "additionalProperties": False,
             },
         },

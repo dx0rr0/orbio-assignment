@@ -9,7 +9,7 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -117,6 +117,23 @@ def _needs_script(before: Claim, after: Claim) -> bool:
         before.status is not ClaimStatus.PENDING_CONFIRMATION
         or before.data_fingerprint != after.data_fingerprint
     )
+
+
+def _prepared_reply(calls: Sequence[ToolCall], results: Sequence[Mapping[str, Any]]) -> str | None:
+    """The reply the LLM prepared with its updates, if every call was an update that was fully
+    accepted. Any rejection or other tool needs the LLM to see the result before replying."""
+    prepared = None
+    for call, result in zip(calls, results, strict=True):
+        if call.name != tools.UPDATE_CLAIM or "error" in result or result.get("rejected"):
+            return None
+        try:
+            arguments = json.loads(call.arguments or "{}")
+        except json.JSONDecodeError:
+            return None
+        reply = arguments.get(tools.REPLY_IF_ACCEPTED)
+        if isinstance(reply, str) and reply.strip():
+            prepared = reply.strip()
+    return prepared
 
 
 class ConversationEngine:
@@ -270,6 +287,7 @@ class ConversationEngine:
             conversation = conversation.add(
                 Message(role=Role.ASSISTANT, tool_calls=completion.tool_calls)
             )
+            results: list[Mapping[str, Any]] = []
             for call in completion.tool_calls:
                 if _needs_script(before, conversation.claim):
                     # The declarant must hear the template before anything else happens to
@@ -277,6 +295,7 @@ class ConversationEngine:
                     result: Mapping[str, Any] = {"error": "not run: the claim changed first"}
                 else:
                     conversation, result = await self._run_tool(conversation, call, turn)
+                results.append(result)
                 conversation = conversation.add(
                     Message(
                         role=Role.TOOL,
@@ -287,6 +306,8 @@ class ConversationEngine:
             turn.progress = conversation
             if _needs_script(before, conversation.claim):
                 return conversation, None
+            if (prepared := _prepared_reply(completion.tool_calls, results)) is not None:
+                return conversation, prepared
 
         logger.warning("LLM kept calling tools for %d rounds", MAX_LLM_ROUNDS)
         raise _LLMUnavailableError(conversation)
@@ -341,7 +362,9 @@ class ConversationEngine:
         self, conversation: Conversation, proposed: Mapping[str, Any], turn: _Turn
     ) -> tuple[Conversation, Mapping[str, Any]]:
         claim = conversation.claim
-        proposed = tools.stated_values(proposed)
+        proposed = tools.stated_values(
+            {name: value for name, value in proposed.items() if name != tools.REPLY_IF_ACCEPTED}
+        )
         with self._telemetry.span("validation", input=proposed) as span:
             number = policy_number_to_look_up(claim, proposed)
             policy: Policy | None = await self._repository.get_policy(number) if number else None

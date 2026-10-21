@@ -69,6 +69,61 @@ async def test_policyholder_name_is_not_shared_with_a_plate_that_does_not_match(
 # --- tools --------------------------------------------------------------------------------
 
 
+async def test_a_reply_prepared_with_an_accepted_update_is_said_without_asking_the_llm_again(
+    engine, llm, conversation_id
+):
+    prepared = IDENTIFICATION | {tools.REPLY_IF_ACCEPTED: "Gracias. ¿Cómo se llama?"}
+    llm.then(call(UPDATE_CLAIM, prepared))
+
+    result = await engine.handle_text(conversation_id, "AUT 48213907, matrícula 4721 KLM")
+
+    assert texts(result) == ["Gracias. ¿Cómo se llama?"]
+    assert result.replies[0].scripted is False
+    assert len(llm.requests) == 1
+    assert result.conversation.claim.policy_number == "AUT-48213907"
+    assert result.conversation.transcript[-1].content == "Gracias. ¿Cómo se llama?"
+
+
+async def test_a_prepared_reply_is_not_said_when_a_value_is_rejected(engine, llm, conversation_id):
+    # It was written assuming the value would be accepted; the LLM must explain the problem.
+    wrong_plate = {"policy_number": "AUT-48213907", "plate": "9999 ZZZ"}
+    prepared = wrong_plate | {tools.REPLY_IF_ACCEPTED: "Gracias. ¿Cómo se llama?"}
+    llm.then(call(UPDATE_CLAIM, prepared), say("La matrícula no coincide. ¿Me la repite?"))
+
+    result = await engine.handle_text(conversation_id, "AUT 48213907, matrícula 9999 ZZZ")
+
+    assert texts(result) == ["La matrícula no coincide. ¿Me la repite?"]
+    assert len(llm.requests) == 2
+
+
+async def test_the_prepared_reply_is_not_a_claim_field(engine, llm, conversation_id):
+    prepared = IDENTIFICATION | {tools.REPLY_IF_ACCEPTED: "Gracias. ¿Cómo se llama?"}
+    llm.then(call(UPDATE_CLAIM, prepared), say("unused"))
+
+    result = await engine.handle_text(conversation_id, "AUT 48213907, matrícula 4721 KLM")
+
+    assert result.conversation.claim.field_errors == {}
+
+
+async def test_without_a_prepared_reply_the_llm_is_asked_for_one(engine, llm, conversation_id):
+    llm.then(call(UPDATE_CLAIM, IDENTIFICATION | {tools.REPLY_IF_ACCEPTED: " "}), say("¿Nombre?"))
+
+    result = await engine.handle_text(conversation_id, "AUT 48213907, matrícula 4721 KLM")
+
+    assert texts(result) == ["¿Nombre?"]
+    assert len(llm.requests) == 2
+
+
+async def test_a_prepared_reply_gives_way_to_the_script(engine, llm, conversation_id):
+    # Completing the claim triggers the read-back from the template (ADR-0005).
+    llm.then(call(UPDATE_CLAIM, COMPLETE | {tools.REPLY_IF_ACCEPTED: "Todo registrado."}))
+
+    result = await engine.handle_text(conversation_id, "Todos los datos")
+
+    assert "Todo registrado." not in texts(result)
+    assert result.conversation.claim.status is ClaimStatus.PENDING_CONFIRMATION
+
+
 async def test_accepted_and_rejected_values_are_reported_to_the_llm(engine, llm, conversation_id):
     llm.then(
         call(UPDATE_CLAIM, {"policy_number": "AUT-48213907", "plate": "9999 ZZZ"}),
@@ -477,9 +532,10 @@ async def test_blank_proposals_are_not_stated_values(engine, llm, conversation_i
     assert claim.injuries is None
 
 
-def test_the_update_tool_has_a_property_for_every_claim_field_and_no_other():
+def test_the_update_tool_has_a_property_for_every_claim_field_and_the_prepared_reply():
     [update] = [t for t in tools.TOOLS if t["function"]["name"] == UPDATE_CLAIM]
-    assert set(update["function"]["parameters"]["properties"]) == set(CLAIM_FIELDS)
+    properties = set(update["function"]["parameters"]["properties"])
+    assert properties == {*CLAIM_FIELDS, tools.REPLY_IF_ACCEPTED}
 
 
 def test_every_claim_field_can_be_declared_unstated():
