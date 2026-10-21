@@ -23,7 +23,7 @@ from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
 from claims_agent.engine import TurnResult, templates
 from claims_agent.ports import ConcurrentUpdateError, ConversationNotFoundError, Span
-from claims_service.intake import services
+from claims_service.intake import error_messages, services
 from claims_service.intake.groups import group_name
 from claims_service.intake.presenters import (
     bot_message_event,
@@ -89,7 +89,7 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
 
     async def _receive(self, content: Any) -> None:
         if not isinstance(content, dict):
-            await self._error("messages must be JSON objects")
+            await self._error(error_messages.UNREADABLE_MESSAGE)
             return
         match content.get("type"):
             case "text" if isinstance(content.get("text"), str):
@@ -105,13 +105,14 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
                     await self.send_json({"type": "transcript", "text": utterance})
                     await self._turn(utterance, reply_audio=True, trace=trace)
             case _:
-                await self._error('expected {"type": "text", "text": ...} or audio')
+                await self._error(error_messages.UNREADABLE_MESSAGE)
 
     async def _turn(self, utterance: str, *, reply_audio: bool, trace: Span) -> None:
         try:
             result = await services.engine().handle_text(self.conversation_id, utterance)
         except ConcurrentUpdateError:
-            await self._error("the conversation changed meanwhile; please repeat")
+            # Another turn of the same conversation (e.g. a second tab) saved first.
+            await self.send_json(bot_message_event(templates.technical_problem()))
             return
         trace.update(
             output=[reply.text for reply in result.replies],
@@ -161,12 +162,12 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
     async def _decode_audio(self, data: str) -> bytes | None:
         """The WAV bytes, or None after telling the client what was wrong."""
         if len(data) > MAX_AUDIO_BASE64_CHARS:
-            await self._error("audio is too long; keep utterances under a minute")
+            await self._error(error_messages.AUDIO_TOO_LONG)
             return None
         try:
             return base64.b64decode(data, validate=True)
         except binascii.Error:
-            await self._error("audio data must be base64")
+            await self._error(error_messages.UNREADABLE_AUDIO)
             return None
 
     async def _technical_problem(self, log_message: str) -> None:

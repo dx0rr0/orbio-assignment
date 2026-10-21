@@ -9,7 +9,7 @@ from channels.testing import WebsocketCommunicator
 
 from claims_agent.engine import templates
 from claims_agent.engine.tools import CONFIRM_CLAIM, UPDATE_CLAIM
-from claims_agent.ports import SpeechError
+from claims_agent.ports import ConcurrentUpdateError, SpeechError
 from claims_service.asgi import application
 from claims_service.intake import consumers
 from claims_service.intake.consumers import NOT_FOUND_CLOSE_CODE
@@ -145,10 +145,15 @@ async def test_failed_synthesis_still_sends_the_text(llm, tts):
 @pytest.mark.parametrize(
     ("message", "error"),
     [
-        ({"type": "video"}, "expected"),
-        ({"type": "text"}, "expected"),
-        ({"type": "audio", "data": "not base64!"}, "base64"),
-        ({"type": "audio", "data": "A" * (consumers.MAX_AUDIO_BASE64_CHARS + 1)}, "too long"),
+        # The interface shows these to the declarant, so they are in Spanish.
+        ([1, 2], "No se ha podido leer el mensaje"),
+        ({"type": "video"}, "No se ha podido leer el mensaje"),
+        ({"type": "text"}, "No se ha podido leer el mensaje"),
+        ({"type": "audio", "data": "not base64!"}, "No se ha podido leer el audio"),
+        (
+            {"type": "audio", "data": "A" * (consumers.MAX_AUDIO_BASE64_CHARS + 1)},
+            "demasiado largo",
+        ),
     ],
 )
 async def test_malformed_messages_get_an_error_and_no_turn(llm, message, error):
@@ -323,3 +328,19 @@ async def test_connections_from_other_origins_are_rejected(headers):
     connected, _ = await communicator.connect()
 
     assert not connected
+
+
+async def test_a_concurrent_update_asks_to_repeat_in_spanish(monkeypatch):
+    class RacingEngine:
+        async def handle_text(self, conversation_id, utterance):
+            raise ConcurrentUpdateError(conversation_id)
+
+    communicator, _ = await started_conversation()
+    monkeypatch.setattr(consumers.services, "engine", RacingEngine)
+
+    await communicator.send_json_to({"type": "text", "text": "Hola"})
+    event = await communicator.receive_json_from(timeout=5)
+
+    assert event["type"] == "bot_message"
+    assert event["text"] == templates.technical_problem().text
+    await communicator.disconnect()
