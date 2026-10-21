@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react'
 
 import { toBase64 } from '../audio/wav'
-import { loadToken, saveToken, socketUrl } from './access'
+import { resumeMessage, saveToken, socketUrl } from './access'
 import type { ClientMessage, ServerEvent } from './protocol'
 import { initialState, reducer } from './state'
 
@@ -18,10 +18,13 @@ export function useConversation(resumeId: string | null, playAudio: (wav: Blob) 
   }, [playAudio])
 
   useEffect(() => {
-    const token = resumeId ? loadToken(session, resumeId) : null
-    const ws = new WebSocket(socketUrl(window.location, resumeId, token))
+    const ws = new WebSocket(socketUrl(window.location, resumeId))
     socket.current = ws
-    ws.onopen = () => dispatch({ type: 'connection', connection: 'open' })
+    ws.onopen = () => {
+      // The handshake: the backend sends the snapshot once it has the token.
+      if (resumeId) ws.send(JSON.stringify(resumeMessage(session, resumeId)))
+      dispatch({ type: 'connection', connection: 'open' })
+    }
     ws.onclose = () => dispatch({ type: 'connection', connection: 'closed' })
     ws.onmessage = (message: MessageEvent<string>) => {
       const event = JSON.parse(message.data) as ServerEvent

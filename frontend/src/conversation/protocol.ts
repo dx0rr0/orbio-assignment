@@ -50,5 +50,6 @@ export type ServerEvent =
   | { type: 'error'; message: string }
 
 export type ClientMessage =
+  | { type: 'resume'; token: string }
   | { type: 'audio'; data: string }
   | { type: 'text'; text: string; reply_audio: boolean }

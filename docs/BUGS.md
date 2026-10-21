@@ -124,7 +124,7 @@ Ground rules for whoever fixes them:
 ### S1. No authentication on conversations
 
 - [x] Fixed in 86e2cbb
-- **Status (2026-10-21):** done as proposed and approved: listing only in DEBUG; per-conversation token (hash stored) required on the WebSocket (`?token=`) and the API (`Authorization: Bearer`); kept in `sessionStorage`, so resuming from another browser is not possible.
+- **Status (2026-10-21):** done as proposed and approved: listing only in DEBUG; per-conversation token (hash stored) required on the WebSocket (first sent as `?token=`, now in a first `resume` message so it stays out of URLs and logs) and the API (`Authorization: Bearer`); kept in `sessionStorage`, so resuming from another browser is not possible.
 - **Where:** `src/claims_service/intake/api.py` (around lines 24–35); `src/claims_service/intake/consumers.py` (around lines 57–63).
 - **Problem:** the API lists every conversation with personal data (names, plates, transcripts). With those ids anyone can connect to `/ws/conversations/<id>/` and inject turns into someone else's conversation.
 - **Fix for v0:** remove or protect the listing endpoint (staff-only via Django auth, or a setting that disables it outside debug). Issue an unguessable per-conversation token when the conversation is created, and require it on the WebSocket. Document real authentication as an improvement.

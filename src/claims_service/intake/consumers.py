@@ -1,23 +1,27 @@
 """Conversation turns over WebSocket (ADR-0004).
 
 Client → server:
+    {"type": "resume", "token": "..."}                       first message when resuming
     {"type": "audio", "data": <base64 WAV>}                  a spoken utterance
     {"type": "text", "text": "...", "reply_audio": false}    a typed one (dev mode, evals)
 Server → client:
-    conversation_started, transcript, bot_message, claim_updated, audio, error
+    conversation_started, snapshot, transcript, bot_message, claim_updated, audio, error
 
 Connecting to /ws/conversations/ starts a conversation (conversation_started carries its
-access token); /ws/conversations/<id>/?token=<token> resumes watching one (its snapshot is
-sent first). Channels hands this consumer one message at a time,
+access token). Connecting to /ws/conversations/<id>/ resumes watching one: the first message
+must be `resume` with that token, and the snapshot follows. The token is not in the URL because
+URLs end up in server and proxy logs. A wrong or missing token, an unknown id, any other first
+message and no handshake within `resume_timeout_s` all close with NOT_FOUND_CLOSE_CODE, so
+nobody learns which conversation ids exist. Channels hands this consumer one message at a time,
 so turns of one connection never overlap.
 """
 
+import asyncio
 import base64
 import binascii
 import logging
 from contextlib import AbstractContextManager
 from typing import Any
-from urllib.parse import parse_qs
 from uuid import UUID
 
 from asgiref.sync import sync_to_async
@@ -48,6 +52,11 @@ logger = logging.getLogger(__name__)
 
 class ConversationConsumer(AsyncJsonWebsocketConsumer):
     conversation_id: UUID
+    # How long a resuming client has to send its token.
+    resume_timeout_s = 10.0
+    # The conversation a connection asked to resume, until its `resume` message arrives.
+    _resume_id: UUID | None = None
+    _resume_deadline: asyncio.Task[None] | None = None
 
     async def connect(self) -> None:
         await self.accept()
@@ -75,10 +84,23 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             with self._trace("greeting"):
                 await self._send_turn(result, reply_audio=True)
             return
-        query = parse_qs(self.scope.get("query_string", b"").decode())
-        token = query.get("token", [None])[0]
+        self._resume_id = conversation_id
+        self._resume_deadline = asyncio.create_task(self._close_unless_resumed())
+
+    async def _close_unless_resumed(self) -> None:
+        await asyncio.sleep(self.resume_timeout_s)
+        self._resume_id = None
+        await self.close(code=NOT_FOUND_CLOSE_CODE)
+
+    async def _resume(self, content: Any) -> None:
+        conversation_id, self._resume_id = self._resume_id, None
+        self._cancel_resume_deadline()
+        if conversation_id is None:
+            return  # already refused, timed out or failed to start
+        is_resume = isinstance(content, dict) and content.get("type") == "resume"
+        token = content.get("token") if is_resume else None
         # A wrong token gets the same answer as an unknown id.
-        if not await access.is_authorized(conversation_id, token):
+        if not isinstance(token, str) or not await access.is_authorized(conversation_id, token):
             await self.close(code=NOT_FOUND_CLOSE_CODE)
             return
         try:
@@ -90,11 +112,20 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         await self.send_json({"type": "snapshot", "conversation": conversation_view(conversation)})
 
     async def disconnect(self, code: int) -> None:
+        self._cancel_resume_deadline()
         if hasattr(self, "conversation_id"):
             group = group_name(self.conversation_id)
             await self.channel_layer.group_discard(group, self.channel_name)
 
     async def receive_json(self, content: Any, **kwargs: Any) -> None:
+        if not hasattr(self, "conversation_id"):
+            # Until it watches a conversation, a connection can only resume one.
+            try:
+                await self._resume(content)
+            except Exception:
+                await self._technical_problem("Could not resume the conversation")
+                await self.close(code=INTERNAL_ERROR_CLOSE_CODE)
+            return
         try:
             await self._receive(content)
         except Exception:
@@ -159,6 +190,11 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
                 "Could not queue the claim summary",
                 extra={"conversation_id": str(self.conversation_id)},
             )
+
+    def _cancel_resume_deadline(self) -> None:
+        if self._resume_deadline is not None:
+            self._resume_deadline.cancel()
+            self._resume_deadline = None
 
     def _trace(self, name: str, input: Any = None) -> AbstractContextManager[Span]:
         return services.telemetry().trace(name, session_id=str(self.conversation_id), input=input)

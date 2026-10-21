@@ -5,14 +5,16 @@ from uuid import UUID, uuid4
 
 import pytest
 from channels.layers import get_channel_layer
+from channels.routing import URLRouter
 from channels.testing import WebsocketCommunicator
+from django.urls import path
 
 from claims_agent.engine import templates
 from claims_agent.engine.tools import CONFIRM_CLAIM, UPDATE_CLAIM
 from claims_agent.ports import ConcurrentUpdateError, SpeechError
 from claims_service.asgi import application
 from claims_service.intake import consumers
-from claims_service.intake.consumers import NOT_FOUND_CLOSE_CODE
+from claims_service.intake.consumers import NOT_FOUND_CLOSE_CODE, ConversationConsumer
 from claims_service.intake.groups import group_name
 from tests.engine.fakes import COMPLETE, call, say
 
@@ -185,14 +187,28 @@ async def test_confirmation_requests_the_summary(llm, policies, summary_requests
     await communicator.disconnect()
 
 
-async def test_reconnecting_with_the_token_sends_a_snapshot(llm):
+async def resume(conversation_id: str, message: object, app=application):
+    communicator = WebsocketCommunicator(
+        app, f"/ws/conversations/{conversation_id}/", headers=[ORIGIN]
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+    await communicator.send_json_to(message)
+    return communicator
+
+
+async def started_with_token() -> tuple[str, str]:
     first = await start()
     started = await first.receive_json_from(timeout=5)
     await receive_until(first, "audio")
     await first.disconnect()
-    conversation_id, token = started["conversation_id"], started["token"]
+    return started["conversation_id"], started["token"]
 
-    communicator = await start(f"/ws/conversations/{conversation_id}/?token={token}")
+
+async def test_resuming_with_the_token_sends_a_snapshot(llm):
+    conversation_id, token = await started_with_token()
+
+    communicator = await resume(conversation_id, {"type": "resume", "token": token})
     event = await communicator.receive_json_from(timeout=5)
 
     assert event["type"] == "snapshot"
@@ -203,32 +219,57 @@ async def test_reconnecting_with_the_token_sends_a_snapshot(llm):
     await communicator.disconnect()
 
 
+NOT_FOUND = {"type": "websocket.close", "code": NOT_FOUND_CLOSE_CODE}
+
+
 async def test_unknown_conversation_is_closed_with_not_found():
-    communicator = WebsocketCommunicator(
-        application, f"/ws/conversations/{uuid4()}/?token=whatever", headers=[ORIGIN]
-    )
-    await communicator.connect()
+    communicator = await resume(str(uuid4()), {"type": "resume", "token": "whatever"})
 
-    assert await communicator.receive_output(timeout=5) == {
-        "type": "websocket.close",
-        "code": NOT_FOUND_CLOSE_CODE,
-    }
+    assert await communicator.receive_output(timeout=5) == NOT_FOUND
 
 
-@pytest.mark.parametrize("query", ["", "?token=", "?token=not-the-token"])
-async def test_resuming_without_the_token_is_closed_as_not_found(query):
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"type": "resume"},
+        {"type": "resume", "token": ""},
+        {"type": "resume", "token": "not-the-token"},
+        {"type": "resume", "token": 42},
+        {"type": "text", "text": "Hola"},
+        [1, 2],
+    ],
+)
+async def test_resuming_without_the_token_is_closed_as_not_found(llm, message):
     # Not found, as for an unknown id: nobody learns which conversation ids exist.
-    first, conversation_id = await started_conversation()
-    await first.disconnect()
-    communicator = WebsocketCommunicator(
-        application, f"/ws/conversations/{conversation_id}/{query}", headers=[ORIGIN]
-    )
-    await communicator.connect()
+    conversation_id, _ = await started_with_token()
 
-    assert await communicator.receive_output(timeout=5) == {
-        "type": "websocket.close",
-        "code": NOT_FOUND_CLOSE_CODE,
-    }
+    communicator = await resume(conversation_id, message)
+
+    assert await communicator.receive_output(timeout=5) == NOT_FOUND
+    assert llm.requests == []
+
+
+class ImpatientConsumer(ConversationConsumer):
+    resume_timeout_s = 0.1
+
+
+def quick_to_give_up() -> URLRouter:
+    consumer = ImpatientConsumer.as_asgi()
+    return URLRouter([path("ws/conversations/<uuid:conversation_id>/", consumer)])
+
+
+async def test_a_token_in_the_url_is_not_enough(llm):
+    # URLs end up in logs, so the token only counts in the handshake message, sent in time.
+    conversation_id, token = await started_with_token()
+    communicator = WebsocketCommunicator(
+        quick_to_give_up(), f"/ws/conversations/{conversation_id}/?token={token}"
+    )
+    connected, _ = await communicator.connect()
+    assert connected
+
+    assert await communicator.receive_output(timeout=5) == NOT_FOUND
+    await communicator.send_json_to({"type": "resume", "token": token})
+    assert await communicator.receive_nothing()
 
 
 async def test_background_updates_reach_watchers():

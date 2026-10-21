@@ -19,7 +19,7 @@ docker compose up --build
 
 Open <http://localhost:8080>, allow the microphone and hold the button (or the space bar) to talk. The page looks like a call in progress: the whole conversation, with the agent's current words shown large, and on the right the claim as stages (identification, driver, what/when/where, damage, other vehicle or police report, confirmation) that fill in as you speak, with validation errors in Spanish. Add `?dev` to the URL to get a text box as well (handy without a microphone); `?conversation=<id>` reopens a conversation started in the same browser tab.
 
-There are no accounts in v0. Each new conversation gets a random access token (only its hash is stored), which the page keeps in `sessionStorage`; resuming a conversation over WebSocket (`?token=`) or reading it through `GET /api/conversations/<id>` (`Authorization: Bearer <token>`) needs it, so a conversation can't be reopened from another browser. The list of all conversations, `GET /api/conversations`, is only served with `DJANGO_DEBUG=true`.
+There are no accounts in v0. Each new conversation gets a random access token (only its hash is stored), which the page keeps in `sessionStorage`; resuming a conversation over WebSocket (a first `{"type": "resume", "token": ...}` message, not a URL query, so the token stays out of logs) or reading it through `GET /api/conversations/<id>` (`Authorization: Bearer <token>`) needs it, so a conversation can't be reopened from another browser. The list of all conversations, `GET /api/conversations`, is only served with `DJANGO_DEBUG=true`.
 
 Five demo policies are seeded, with dates relative to today, one per scenario:
 

@@ -4,6 +4,8 @@
  * conversation, another browser cannot.
  */
 
+import type { ClientMessage } from './protocol'
+
 // A getter, because even reading `window.sessionStorage` throws where storage is blocked.
 type TokenStorage = () => Pick<Storage, 'getItem' | 'setItem'>
 
@@ -28,11 +30,16 @@ export function loadToken(storage: TokenStorage, conversationId: string): string
 export function socketUrl(
   page: { protocol: string; host: string },
   conversationId: string | null,
-  token: string | null,
 ): string {
   const scheme = page.protocol === 'https:' ? 'wss' : 'ws'
-  const path = conversationId
-    ? `/ws/conversations/${conversationId}/?token=${encodeURIComponent(token ?? '')}`
-    : '/ws/conversations/'
+  const path = conversationId ? `/ws/conversations/${conversationId}/` : '/ws/conversations/'
   return `${scheme}://${page.host}${path}`
+}
+
+/**
+ * The first message on a resumed conversation's socket. The token goes here rather than in the
+ * URL, which ends up in server and proxy logs. Without one the backend just closes the socket.
+ */
+export function resumeMessage(storage: TokenStorage, conversationId: string): ClientMessage {
+  return { type: 'resume', token: loadToken(storage, conversationId) ?? '' }
 }
