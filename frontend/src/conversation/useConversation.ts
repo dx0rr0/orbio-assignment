@@ -48,14 +48,11 @@ export function useConversation(resumeId: string | null, playAudio: (wav: Blob, 
   const send = useCallback((message: ClientMessage) => {
     if (socket.current?.readyState !== WebSocket.OPEN) return
     socket.current.send(JSON.stringify(message))
-    // Until its last part, an utterance is still being spoken: no reply is awaited yet.
-    if (message.type === 'audio_chunk' && !message.final) return
     dispatch({ type: 'sent', text: message.type === 'text' ? message.text : undefined })
   }, [])
 
-  const sendAudioPart = useCallback(
-    (wav: ArrayBuffer, final: boolean) =>
-      send({ type: 'audio_chunk', data: toBase64(wav), final }),
+  const sendAudio = useCallback(
+    (wav: ArrayBuffer) => send({ type: 'audio', data: toBase64(wav) }),
     [send],
   )
   const sendText = useCallback(
@@ -63,5 +60,5 @@ export function useConversation(resumeId: string | null, playAudio: (wav: Blob, 
     [send],
   )
 
-  return { state, sendAudioPart, sendText }
+  return { state, sendAudio, sendText }
 }

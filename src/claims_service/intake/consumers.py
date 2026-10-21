@@ -3,8 +3,6 @@
 Client → server:
     {"type": "resume", "token": "..."}                       first message when resuming
     {"type": "audio", "data": <base64 WAV>}                  a spoken utterance
-    {"type": "audio_chunk", "data": <base64 WAV>, "final": false}
-                                                             part of one, while it is spoken
     {"type": "text", "text": "...", "reply_audio": false}    a typed one (dev mode, evals)
 Server → client:
     conversation_started, snapshot, transcript, bot_message, claim_updated, audio,
@@ -13,10 +11,6 @@ Server → client:
 The speech of a turn's reply comes in chunks, one per sentence, each sent as soon as it is
 synthesized: `audio` carries the first one and starts a new reply, `audio_continued` the rest,
 to be played in order after it.
-
-A spoken utterance may also come in parts, cut by the client at the declarant's pauses: each is
-transcribed as soon as it arrives, so when the declarant stops talking (the part with `final`
-true) only the last one is left to transcribe. The parts share the length limit of an utterance.
 
 Connecting to /ws/conversations/ starts a conversation (conversation_started carries its
 access token). Connecting to /ws/conversations/<id>/ resumes watching one: the first message
@@ -32,14 +26,13 @@ import base64
 import binascii
 import logging
 from contextlib import AbstractContextManager, aclosing
-from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
 from asgiref.sync import sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
-from claims_agent.engine import TurnResult, Voice, templates
+from claims_agent.engine import TurnResult, templates
 from claims_agent.ports import ConcurrentUpdateError, ConversationNotFoundError, Span
 from claims_service.intake import error_messages
 from claims_service.intake.groups import group_name
@@ -60,21 +53,6 @@ INTERNAL_ERROR_CLOSE_CODE = 1011
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class _PartsOfUtterance:
-    """The parts of an utterance received so far, each one transcribing since it arrived."""
-
-    transcriptions: list[asyncio.Task[str | None]] = field(default_factory=list)
-    base64_chars: int = 0
-    wav_bytes: int = 0
-    # After an error, the rest of the utterance is ignored up to its final part.
-    discarded: bool = False
-
-    def cancel(self) -> None:
-        for transcription in self.transcriptions:
-            transcription.cancel()
-
-
 class ConversationConsumer(AsyncJsonWebsocketConsumer):
     conversation_id: UUID
     # How long a resuming client has to send its token.
@@ -82,8 +60,6 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
     # The conversation a connection asked to resume, until its `resume` message arrives.
     _resume_id: UUID | None = None
     _resume_deadline: asyncio.Task[None] | None = None
-    # The utterance being spoken in parts, until its final part arrives.
-    _parts: _PartsOfUtterance | None = None
 
     def __init__(self, *args: Any, services: ConsumerServices, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -147,7 +123,6 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
 
     async def disconnect(self, code: int) -> None:
         self._cancel_resume_deadline()
-        self._drop_parts()
         if hasattr(self, "conversation_id"):
             group = group_name(self.conversation_id)
             await self.channel_layer.group_discard(group, self.channel_name)
@@ -174,10 +149,7 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         if not isinstance(content, dict):
             await self._error(error_messages.UNREADABLE_MESSAGE)
             return
-        kind = content.get("type")
-        if kind != "audio_chunk":
-            self._drop_parts()
-        match kind:
+        match content.get("type"):
             case "text" if isinstance(content.get("text"), str):
                 if len(content["text"]) > MAX_TEXT_CHARS:
                     await self._error(error_messages.TEXT_TOO_LONG)
@@ -185,10 +157,6 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
                 with self._trace("turn", input={"text": content["text"]}) as trace:
                     reply_audio = bool(content.get("reply_audio", False))
                     await self._turn(content["text"], reply_audio=reply_audio, trace=trace)
-            case "audio_chunk" if isinstance(content.get("data"), str) and isinstance(
-                content.get("final"), bool
-            ):
-                await self._receive_part(content["data"], final=content["final"])
             case "audio" if isinstance(content.get("data"), str):
                 wav = await self._decode_audio(content["data"])
                 if wav is None:
@@ -199,36 +167,6 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
                     await self._turn(utterance, reply_audio=True, trace=trace)
             case _:
                 await self._error(error_messages.UNREADABLE_MESSAGE)
-
-    async def _receive_part(self, data: str, *, final: bool) -> None:
-        parts = self._parts or _PartsOfUtterance()
-        self._parts = None if final else parts
-        if parts.discarded:
-            return
-        parts.base64_chars += len(data)
-        wav = None
-        if parts.base64_chars > MAX_AUDIO_BASE64_CHARS:
-            await self._error(error_messages.AUDIO_TOO_LONG)
-        else:
-            wav = await self._decode_audio(data)
-        if wav is None:
-            parts.cancel()
-            parts.discarded = True
-            return
-        parts.transcriptions.append(asyncio.create_task(self._transcribe_part(wav)))
-        parts.wav_bytes += len(wav)
-        if not final:
-            return
-        turn_input = {"wav_bytes": parts.wav_bytes, "parts": len(parts.transcriptions)}
-        with self._trace("turn", input=turn_input) as trace:
-            utterance = Voice.join_parts(await asyncio.gather(*parts.transcriptions))
-            await self.send_json({"type": "transcript", "text": utterance})
-            await self._turn(utterance, reply_audio=True, trace=trace)
-
-    async def _transcribe_part(self, wav: bytes) -> str | None:
-        # It runs while the declarant is still talking, before the turn's trace starts.
-        with self._trace("utterance part", input={"wav_bytes": len(wav)}):
-            return await self._services.voice.transcribe_part(wav)
 
     async def _turn(self, utterance: str, *, reply_audio: bool, trace: Span) -> None:
         try:
@@ -264,12 +202,6 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
                 "Could not queue the claim summary",
                 extra={"conversation_id": str(self.conversation_id)},
             )
-
-    def _drop_parts(self) -> None:
-        """Forget an unfinished utterance: the declarant moved on to another message."""
-        if self._parts is not None:
-            self._parts.cancel()
-            self._parts = None
 
     def _cancel_resume_deadline(self) -> None:
         if self._resume_deadline is not None:

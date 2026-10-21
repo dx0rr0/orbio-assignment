@@ -1,8 +1,6 @@
 """Django service tests: real Postgres (from docker compose), in-memory channel layer, and
 scripted fakes for the LLM and speech providers."""
 
-import asyncio
-
 import pytest
 from asgiref.sync import sync_to_async
 from django.db import connections
@@ -22,12 +20,8 @@ from tests.engine.fakes import RecordingTelemetry, ScriptedLLM, no_sleep
 class FakeSpeechToText:
     def __init__(self) -> None:
         self.transcripts: list[str | Exception] = []
-        self.heard: list[bytes] = []
-        self.has_heard = asyncio.Event()
 
     async def transcribe(self, wav: bytes) -> str:
-        self.heard.append(wav)
-        self.has_heard.set()
         step = self.transcripts.pop(0)
         if isinstance(step, Exception):
             raise step

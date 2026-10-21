@@ -2,19 +2,16 @@ import { useRef, useState } from 'react'
 
 import { Recorder } from '../audio/recorder'
 
-/**
- * Hold to talk (mouse, touch or the space bar). The utterance goes out in parts, each as soon
- * as a pause ends it; the last one, on release, is `final`.
- */
+/** Hold to talk (mouse, touch or the space bar); the utterance is sent on release. */
 export function TalkButton({
   disabled,
   onRecordingChange,
-  onUtterancePart,
+  onUtterance,
   onError,
 }: {
   disabled: boolean
   onRecordingChange: (recording: boolean) => void
-  onUtterancePart: (wav: ArrayBuffer, final: boolean) => void
+  onUtterance: (wav: ArrayBuffer) => void
   onError: (message: string) => void
 }) {
   const recorder = useRef(new Recorder())
@@ -29,8 +26,7 @@ export function TalkButton({
   const start = () => {
     if (disabled || recording) return
     setRecordingState(true)
-    const onPart = (wav: ArrayBuffer) => onUtterancePart(wav, false)
-    starting.current = recorder.current.start(onPart).catch(() => {
+    starting.current = recorder.current.start().catch(() => {
       setRecordingState(false)
       onError('No se ha podido acceder al micrófono.')
     })
@@ -40,7 +36,7 @@ export function TalkButton({
     if (!recording) return
     await starting.current
     setRecordingState(false)
-    onUtterancePart(await recorder.current.stop(), true)
+    onUtterance(await recorder.current.stop())
   }
 
   const label = recording ? 'Suelte para enviar' : 'Mantenga pulsado para hablar'

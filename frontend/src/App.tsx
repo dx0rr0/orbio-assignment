@@ -49,7 +49,7 @@ export default function App() {
     [queue],
   )
 
-  const { state, sendAudioPart, sendText } = useConversation(resumeId, playAudio)
+  const { state, sendAudio, sendText } = useConversation(resumeId, playAudio)
   const [micError, setMicError] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
 
@@ -90,9 +90,9 @@ export default function App() {
                 setRecording(value)
                 if (value) stopSpeaking() // talking over the agent interrupts it
               }}
-              onUtterancePart={(wav, final) => {
+              onUtterance={(wav) => {
                 setMicError(null)
-                sendAudioPart(wav, final)
+                sendAudio(wav)
               }}
               onError={setMicError}
             />

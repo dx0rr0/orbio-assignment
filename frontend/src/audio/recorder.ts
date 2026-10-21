@@ -1,4 +1,3 @@
-import { PauseCutter } from './pauses'
 import { downsample, encodeWav, TARGET_SAMPLE_RATE } from './wav'
 
 // Collects the microphone's samples on the audio thread and posts them to the page.
@@ -13,17 +12,14 @@ class Capture extends AudioWorkletProcessor {
 registerProcessor('capture', Capture)
 `
 
-/**
- * Push-to-talk recorder: `start(onPart)` opens the microphone and hands each part of the
- * utterance to `onPart` as a 16 kHz WAV as soon as a pause ends it; `stop()` returns the last
- * part.
- */
+/** Push-to-talk recorder: `start()` opens the microphone, `stop()` returns a 16 kHz WAV. */
 export class Recorder {
   private context: AudioContext | null = null
   private stream: MediaStream | null = null
-  private cutter: PauseCutter | null = null
+  private chunks: Float32Array[] = []
 
-  async start(onPart: (wav: ArrayBuffer) => void): Promise<void> {
+  async start(): Promise<void> {
+    this.chunks = []
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     })
@@ -34,14 +30,8 @@ export class Recorder {
     } finally {
       URL.revokeObjectURL(url)
     }
-    const sampleRate = this.context.sampleRate
-    const cutter = new PauseCutter(sampleRate)
-    this.cutter = cutter
     const capture = new AudioWorkletNode(this.context, 'capture')
-    capture.port.onmessage = (event: MessageEvent<Float32Array>) => {
-      const part = cutter.push(event.data)
-      if (part) onPart(toWav(part, sampleRate))
-    }
+    capture.port.onmessage = (event: MessageEvent<Float32Array>) => this.chunks.push(event.data)
     this.context.createMediaStreamSource(this.stream).connect(capture)
   }
 
@@ -52,12 +42,13 @@ export class Recorder {
     this.context = null
     this.stream = null
 
-    const last = this.cutter?.flush() ?? new Float32Array()
-    this.cutter = null
-    return toWav(last, sampleRate)
+    const samples = new Float32Array(this.chunks.reduce((total, c) => total + c.length, 0))
+    let offset = 0
+    for (const chunk of this.chunks) {
+      samples.set(chunk, offset)
+      offset += chunk.length
+    }
+    this.chunks = []
+    return encodeWav(downsample(samples, sampleRate, TARGET_SAMPLE_RATE), TARGET_SAMPLE_RATE)
   }
-}
-
-function toWav(samples: Float32Array, sampleRate: number): ArrayBuffer {
-  return encodeWav(downsample(samples, sampleRate, TARGET_SAMPLE_RATE), TARGET_SAMPLE_RATE)
 }
