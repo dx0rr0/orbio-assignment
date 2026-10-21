@@ -177,6 +177,8 @@ CASES: tuple[Case, ...] = (
             "where": location(municipality="Arganda del Rey", province="Madrid"),
             "injuries": equals("injuries", False),
             "immobilized": equals("vehicle_immobilized", False),
+            # Every field is given, so the claim goes to the read-back.
+            "pending": status(ClaimStatus.PENDING_CONFIRMATION),
         },
     ),
     Case(
@@ -248,7 +250,20 @@ CASES: tuple[Case, ...] = (
         tags=("driver", "short"),
         known=MARIA,
         asked="¿Conducía usted el vehículo cuando ocurrió?",
-        checks={"driver": equals("driver_is_policyholder", True)},
+        checks={
+            "driver": equals("driver_is_policyholder", True),
+            "nothing_new": unchanged(
+                "driver_name",
+                "loss_type",
+                "loss_window",
+                "loss_location",
+                "description",
+                "injuries",
+                "vehicle_immobilized",
+                "other_vehicle_involved",
+                "police_report_filed",
+            ),
+        },
     ),
     Case(
         id="R06",

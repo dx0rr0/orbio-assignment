@@ -9,10 +9,13 @@ The consumer runs with the production services, except for the repository and th
 tokens: the conversation each case starts from is put in memory, so nothing touches the
 development database. Langfuse is off; everything is recorded under
 `.claude/hillclimb/ttfa/<variant>/`: `results.jsonl` (one row per case and rep), `traces/`,
-`errors.jsonl` and `summary.json`.
+`errors.jsonl` and `summary.json`. One unrecorded turn (WARM_UP) runs first, so the cold start
+(TLS handshakes, the first LLM call) doesn't land on the first case.
 
 Spending is checked against the OpenRouter key before every case: the run stops once the key
-has used BUDGET_STOP dollars. The key's own limit is the hard cap.
+has used BUDGET_STOP dollars. The key's own limit is the hard cap. An infrastructure error (a
+failed STT or TTS, the technical-problem apology after LLM failures) stops the run too: it
+would fail every case the same way.
 """
 
 import argparse
@@ -27,8 +30,8 @@ import secrets
 import statistics
 import sys
 import time
-from collections.abc import Mapping, Sequence
-from contextlib import AsyncExitStack
+from collections.abc import Iterator, Sequence
+from contextlib import AsyncExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -54,7 +57,8 @@ from claims_agent.domain import (
     apply_update,
     policy_number_to_look_up,
 )
-from claims_agent.ports import ChatModel, Completion
+from claims_agent.engine import templates
+from claims_agent.ports import ChatModel, Completion, NullTelemetry, Span, ToolSpec
 from claims_agent.seed import seed_policies
 from evals.latency.cases import CASES, TEST_IDS, Case, read_back_text, resolve
 
@@ -67,6 +71,10 @@ CASE_TIMEOUT_S = 90
 # A cold first connection (imports, joining the Redis group) can take longer than the
 # communicator's default of 1 s.
 CONNECT_TIMEOUT_S = 10
+# The shortest clip ("Sí."), run once before the cases and not recorded.
+WARM_UP = "R05"
+# What the engine says after the LLM failed; a case answered with it measures nothing.
+TECHNICAL_PROBLEM = templates.technical_problem().text
 
 
 # --- instrumentation ----------------------------------------------------------------------------
@@ -75,10 +83,45 @@ CONNECT_TIMEOUT_S = 10
 @dataclass
 class Meter:
     llm_calls: list[dict[str, Any]] = field(default_factory=list)
+    # Why the voice failed to transcribe ("stt") or to speak ("tts"), as it recorded it.
+    speech_errors: dict[str, str] = field(default_factory=dict)
+    speech_failed: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def reset(self) -> None:
+        self.llm_calls.clear()
+        self.speech_errors.clear()
+        self.speech_failed.clear()
+
+
+class _SpeechSpan:
+    def __init__(self, name: str, meter: Meter) -> None:
+        self._name = name
+        self._meter = meter
+
+    def update(self, *, output: Any = None, metadata: Any = None) -> None:
+        if isinstance(metadata, dict) and "error" in metadata:
+            self._meter.speech_errors[self._name] = str(metadata["error"])
+            self._meter.speech_failed.set()
+
+
+class SpeechTelemetry(NullTelemetry):
+    """No traces (Langfuse is off), but the reason the voice gives when STT or TTS fail: a
+    failed synthesis sends no audio, so the case would otherwise wait for it until timeout."""
+
+    def __init__(self, meter: Meter) -> None:
+        self._meter = meter
+
+    @contextmanager
+    def span(self, name: str, *, input: Any = None) -> Iterator[Span]:
+        if name in ("stt", "tts"):
+            yield _SpeechSpan(name, self._meter)
+        else:
+            with super().span(name, input=input) as span:
+                yield span
 
 
 class MeteredChatModel:
-    """The production chat model, timing each completion."""
+    """The production chat model, timing each completion, failed ones too."""
 
     def __init__(self, llm: ChatModel, meter: Meter) -> None:
         self._llm = llm
@@ -89,10 +132,15 @@ class MeteredChatModel:
         *,
         system: str,
         messages: Sequence[Message],
-        tools: Sequence[Mapping[str, Any]],
+        tools: Sequence[ToolSpec],
     ) -> Completion:
         started = time.perf_counter()
-        completion = await self._llm.complete(system=system, messages=messages, tools=tools)
+        try:
+            completion = await self._llm.complete(system=system, messages=messages, tools=tools)
+        except Exception as error:
+            latency = round(time.perf_counter() - started, 3)
+            self._meter.llm_calls.append({"latency_s": latency, "error": repr(error)})
+            raise
         self._meter.llm_calls.append({"latency_s": round(time.perf_counter() - started, 3)})
         return completion
 
@@ -190,13 +238,26 @@ class Harness:
     resources: AsyncExitStack
 
 
+async def next_event(communicator: WebsocketCommunicator, meter: Meter) -> dict[str, Any]:
+    """The next event from the consumer, unless the voice reports a failure first."""
+    receive = asyncio.ensure_future(communicator.receive_json_from(timeout=CASE_TIMEOUT_S))
+    speech_failed = asyncio.ensure_future(meter.speech_failed.wait())
+    done, _ = await asyncio.wait({receive, speech_failed}, return_when=asyncio.FIRST_COMPLETED)
+    speech_failed.cancel()
+    if receive in done:
+        event: dict[str, Any] = receive.result()
+        return event
+    receive.cancel()
+    raise RuntimeError(f"speech failed: {meter.speech_errors}")
+
+
 async def run_case(case: Case, harness: Harness) -> dict[str, Any]:
     now = datetime.now(MADRID)
     conversation = await harness.repository.create(initial_conversation(case, now))
     token = await harness.access.issue_token(conversation.id)
     wav = (AUDIO / case.audio).read_bytes()
     meter = harness.meter
-    meter.llm_calls.clear()
+    meter.reset()
 
     communicator = WebsocketCommunicator(
         harness.application,
@@ -220,14 +281,18 @@ async def run_case(case: Case, harness: Harness) -> dict[str, Any]:
         # The turn is measured once the claim is saved and the first audio is out. A receive
         # timeout cancels the consumer (asgiref), so the loop never waits for silence.
         while not {"claim_updated", "audio"} <= marks.keys():
-            event = await communicator.receive_json_from(timeout=CASE_TIMEOUT_S)
+            event = await next_event(communicator, meter)
             kind = event["type"]
             marks.setdefault(kind, round(time.perf_counter() - started, 3))
             if kind == "transcript":
                 transcript = event["text"]
                 if not transcript:
-                    raise RuntimeError("empty transcript (the STT failed)")
+                    reason = meter.speech_errors.get("stt", "no error recorded")
+                    raise RuntimeError(f"empty transcript (the STT failed: {reason})")
             elif kind == "bot_message":
+                if event["text"] == TECHNICAL_PROBLEM:
+                    failed = [c["error"] for c in meter.llm_calls if "error" in c]
+                    raise RuntimeError(f"the engine apologised for a technical problem: {failed}")
                 replies.append(event["text"])
             elif kind == "error":
                 raise RuntimeError(f"server error: {event['message']}")
@@ -254,6 +319,7 @@ async def run_case(case: Case, harness: Harness) -> dict[str, Any]:
         "engine_s": round(engine_done - stt, 3),
         "tts_first_s": round(marks["audio"] - engine_done, 3),
         "llm_calls": len(meter.llm_calls),
+        "llm_failed": sum("error" in c for c in meter.llm_calls),
         "llm_s": round(sum(c["latency_s"] for c in meter.llm_calls), 3),
         "replies": replies,
         "status": "ok",
@@ -271,7 +337,7 @@ def percentile(values: list[float], q: float) -> float:
 
 def build_harness() -> Harness:
     """The consumer with the production services but for the repository and the access
-    tokens, which live in memory with the conversations."""
+    tokens, which live in memory with the conversations, and the meters around them."""
     from claims_agent.engine import ConversationEngine
     from claims_service.intake import services
     from claims_service.intake.routing import websocket_application
@@ -280,7 +346,8 @@ def build_harness() -> Harness:
     access = InMemoryAccess()
     meter = Meter()
     resources = AsyncExitStack()
-    telemetry = services.telemetry_from_settings()
+    # What production runs with when Langfuse is off, plus the speech failures.
+    telemetry = SpeechTelemetry(meter)
     llm = MeteredChatModel(services.chat_model_from_settings(), meter)
     consumer_services = services.ConsumerServices(
         engine=ConversationEngine(llm=llm, repository=repository, telemetry=telemetry),
@@ -321,57 +388,64 @@ async def run_cases(
             row = json.loads(line)
             done.add((row["prompt_id"], row["rep"]))
 
+    def record_error(case_id: str, rep: int | str, error: Exception) -> None:
+        with (out / "errors.jsonl").open("a", encoding="utf-8") as errors:
+            entry = {
+                "prompt_id": case_id,
+                "rep": rep,
+                "error": repr(error),
+                "llm_calls": list(harness.meter.llm_calls),
+                "speech_errors": dict(harness.meter.speech_errors),
+            }
+            errors.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        # Infrastructure fails the same way for every case: stop before paying for more.
+        print(f"  {case_id} rep{rep}: ERROR {error!r}; stopping the run")
+
+    pending = [(rep, case) for rep in range(reps) for case in cases if (case.id, rep) not in done]
     start_usage = key_usage()
     print(f"{variant}: {len(cases)} cases x {reps} reps, key usage ${start_usage:.4f}")
-    for rep in range(reps):
-        for case in cases:
-            if (case.id, rep) in done:
-                continue
-            before = key_usage()
-            if before >= BUDGET_STOP:
-                print(f"budget stop: key usage ${before:.4f} >= ${BUDGET_STOP}")
-                return 3
-            try:
-                row = await run_case(case, harness)
-            except Exception as error:  # recorded, never scored
-                with (out / "errors.jsonl").open("a", encoding="utf-8") as errors:
-                    errors.write(
-                        json.dumps(
-                            {
-                                "prompt_id": case.id,
-                                "rep": rep,
-                                "error": repr(error),
-                                "llm_calls": list(harness.meter.llm_calls),
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-                # Infrastructure fails the same way for every case: stop before paying for more.
-                print(f"  {case.id} rep{rep}: ERROR {error!r}; stopping the run")
-                return 4
-            row["rep"] = rep
-            trace = row.pop("_trace")
-            (out / "traces" / f"{case.id}_rep{rep}.json").write_text(
-                json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            with results_path.open("a", encoding="utf-8") as results:
-                results.write(json.dumps(row, ensure_ascii=False) + "\n")
-            failed = [name for name, ok in row["checks"].items() if not ok]
-            print(
-                f"  {case.id} rep{rep}: ttfa {row['ttfa_s']:.2f}s "
-                f"(stt {row['stt_s']:.2f} · engine {row['engine_s']:.2f} · "
-                f"tts {row['tts_first_s']:.2f}) llm x{row['llm_calls']} "
-                f"{'PASS' if not failed else 'FAIL ' + ','.join(failed)}"
-            )
+    if pending:
+        if start_usage >= BUDGET_STOP:
+            print(f"budget stop: key usage ${start_usage:.4f} >= ${BUDGET_STOP}")
+            return 3
+        try:
+            await run_case(next(c for c in CASES if c.id == WARM_UP), harness)
+        except Exception as error:  # recorded, never scored
+            record_error(WARM_UP, "warm-up", error)
+            return 4
+    for rep, case in pending:
+        before = key_usage()
+        if before >= BUDGET_STOP:
+            print(f"budget stop: key usage ${before:.4f} >= ${BUDGET_STOP}")
+            return 3
+        try:
+            row = await run_case(case, harness)
+        except Exception as error:  # recorded, never scored
+            record_error(case.id, rep, error)
+            return 4
+        row["rep"] = rep
+        trace = row.pop("_trace")
+        (out / "traces" / f"{case.id}_rep{rep}.json").write_text(
+            json.dumps(trace, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        with results_path.open("a", encoding="utf-8") as results:
+            results.write(json.dumps(row, ensure_ascii=False) + "\n")
+        failed = [name for name, ok in row["checks"].items() if not ok]
+        print(
+            f"  {case.id} rep{rep}: ttfa {row['ttfa_s']:.2f}s "
+            f"(stt {row['stt_s']:.2f} · engine {row['engine_s']:.2f} · "
+            f"tts {row['tts_first_s']:.2f}) llm x{row['llm_calls']} "
+            f"{'PASS' if not failed else 'FAIL ' + ','.join(failed)}"
+        )
 
     # The key's usage lags behind the calls by a few seconds, so cost is only measured per run.
     await asyncio.sleep(10)
     spent = key_usage() - start_usage
-    ran = sum(1 for rep in range(reps) for case in cases if (case.id, rep) not in done)
+    # The warm-up turn is paid for like a case.
+    turns = len(pending) + 1 if pending else 0
     summary: dict[str, Any] = {
         "spent_this_run_usd": round(spent, 6),
-        "cost_per_case_usd": round(spent / ran, 6) if ran else None,
+        "cost_per_case_usd": round(spent / turns, 6) if turns else None,
     }
     rows = (
         [json.loads(line) for line in results_path.read_text(encoding="utf-8").splitlines()]
