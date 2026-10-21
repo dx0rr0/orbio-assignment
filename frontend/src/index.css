@@ -303,6 +303,7 @@ body {
 .panel-header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 8px;
 }
@@ -318,6 +319,13 @@ body {
   color: var(--muted);
 }
 
+.panel-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.status,
 .urgency {
   padding: 4px 12px;
   border-radius: 999px;
@@ -338,6 +346,32 @@ body {
 .urgency-low {
   background: var(--live-bg);
   color: var(--live);
+}
+
+.status-in_progress {
+  background: var(--surface-raised);
+  color: var(--accent-text);
+}
+
+.status-pending_confirmation {
+  background: var(--medium-bg);
+  color: var(--medium);
+}
+
+.status-confirmed {
+  background: var(--live-bg);
+  color: var(--live);
+}
+
+.status-incomplete,
+.status-escalated {
+  background: var(--alert-bg);
+  color: var(--alert-text);
+}
+
+.status-not_covered {
+  background: var(--error-bg);
+  color: var(--error);
 }
 
 .reference {

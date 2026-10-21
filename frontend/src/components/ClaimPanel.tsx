@@ -1,4 +1,4 @@
-import { CLOSURE_LABELS, URGENCY_LABELS, displayPlate } from '../claim/format'
+import { CLOSURE_LABELS, STATUS_LABELS, URGENCY_LABELS, displayPlate } from '../claim/format'
 import { stages } from '../claim/stages'
 import type { ClaimView, Summary } from '../conversation/protocol'
 
@@ -23,11 +23,16 @@ export function ClaimPanel({ claim, summary }: { claim: ClaimView | null; summar
     <aside className="panel" aria-label="Su declaración">
       <header className="panel-header">
         <h2>Su declaración</h2>
-        {claim.urgency && (
-          <span className={`urgency urgency-${claim.urgency}`}>
-            Urgencia {URGENCY_LABELS[claim.urgency].toLowerCase()}
+        <div className="panel-badges">
+          <span className={`status status-${claim.status}`}>
+            {STATUS_LABELS[claim.status] ?? claim.status}
           </span>
-        )}
+          {claim.urgency && (
+            <span className={`urgency urgency-${claim.urgency}`}>
+              Urgencia {URGENCY_LABELS[claim.urgency].toLowerCase()}
+            </span>
+          )}
+        </div>
       </header>
       {(policy || plate) && (
         <p className="panel-muted">

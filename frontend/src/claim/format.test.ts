@@ -1,6 +1,20 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatValue } from './format'
+import { STATUS_LABELS, formatValue } from './format'
+
+describe('STATUS_LABELS', () => {
+  it('labels every claim status', () => {
+    const statuses = [
+      'in_progress',
+      'pending_confirmation',
+      'confirmed',
+      'incomplete',
+      'not_covered',
+      'escalated',
+    ]
+    expect(statuses.filter((status) => !STATUS_LABELS[status])).toEqual([])
+  })
+})
 
 describe('formatValue', () => {
   it('shows missing values as a dash and booleans in Spanish', () => {
