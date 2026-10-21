@@ -69,7 +69,7 @@ ROOT = Path(__file__).resolve().parents[2]
 FLOW = ROOT / ".claude" / "hillclimb" / "ttfa"
 AUDIO = Path(__file__).parent / "audio"
 HARNESS = [Path(__file__), Path(__file__).parent / "cases.py"]
-BUDGET_STOP = 0.58
+BUDGET_STOP = 0.68
 CASE_TIMEOUT_S = 90
 # A cold first connection (imports, joining the Redis group) can take longer than the
 # communicator's default of 1 s.
