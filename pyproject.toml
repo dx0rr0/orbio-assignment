@@ -38,7 +38,6 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-DJANGO_SETTINGS_MODULE = "tests.settings"
 pythonpath = ["."]
 addopts = "-m 'not e2e'"
 markers = ["e2e: hits real providers; run on demand with `pytest -m e2e`"]
