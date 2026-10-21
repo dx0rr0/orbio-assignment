@@ -18,7 +18,7 @@ from claims_agent.domain import Message, Role, ToolCall
 from claims_agent.ports import Completion, LLMError, SpeechError, ToolSpec, Usage
 
 BASE_URL = "https://openrouter.ai/api/v1"
-CHAT_MODEL = "anthropic/claude-haiku-5.5"
+CHAT_MODEL = "google/gemini-3.1-flash-lite"
 # A turn's tool calls and short questions need no reasoning, and reasoning tokens come
 # before the first token of the answer.
 CHAT_REASONING_EFFORT: ReasoningEffort = "none"
