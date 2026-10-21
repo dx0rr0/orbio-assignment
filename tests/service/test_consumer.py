@@ -275,3 +275,36 @@ async def test_a_slow_broker_does_not_block_the_event_loop(llm, policies, monkey
 
     assert max(gaps) < 0.3
     await communicator.disconnect()
+
+
+class BrokenEngine:
+    async def start(self):
+        raise RuntimeError("database is down")
+
+    async def handle_text(self, conversation_id, utterance):
+        raise RuntimeError("database is down")
+
+
+async def test_an_unexpected_error_in_a_turn_apologises_and_keeps_the_socket(monkeypatch):
+    communicator, _ = await started_conversation()
+    monkeypatch.setattr(consumers.services, "engine", BrokenEngine)
+
+    await communicator.send_json_to({"type": "text", "text": "Hola"})
+    event = await communicator.receive_json_from(timeout=5)
+
+    assert event["type"] == "bot_message"
+    assert event["text"] == templates.technical_problem().text
+    await communicator.send_json_to({"type": "text", "text": "¿Hola?"})
+    assert (await communicator.receive_json_from(timeout=5))["type"] == "bot_message"
+    await communicator.disconnect()
+
+
+async def test_an_unexpected_error_when_connecting_apologises(monkeypatch):
+    monkeypatch.setattr(consumers.services, "engine", BrokenEngine)
+    communicator = await start()
+
+    event = await communicator.receive_json_from(timeout=5)
+
+    assert event["type"] == "bot_message"
+    assert event["text"] == templates.technical_problem().text
+    assert (await communicator.receive_output(timeout=5))["type"] == "websocket.close"

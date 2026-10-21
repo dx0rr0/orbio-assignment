@@ -21,7 +21,7 @@ from uuid import UUID
 from asgiref.sync import sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
-from claims_agent.engine import TurnResult
+from claims_agent.engine import TurnResult, templates
 from claims_agent.ports import ConcurrentUpdateError, ConversationNotFoundError, Span
 from claims_service.intake import services
 from claims_service.intake.groups import group_name
@@ -35,6 +35,7 @@ from claims_service.intake.tasks import generate_claim_summary
 # About a minute of 16 kHz mono 16-bit audio, base64-encoded.
 MAX_AUDIO_BASE64_CHARS = 3_000_000
 NOT_FOUND_CLOSE_CODE = 4404
+INTERNAL_ERROR_CLOSE_CODE = 1011
 # Give up queueing the summary after about a second instead of kombu's default retries.
 SUMMARY_RETRY_POLICY = {"max_retries": 2, "interval_start": 0, "interval_step": 0.5}
 
@@ -46,6 +47,14 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
 
     async def connect(self) -> None:
         await self.accept()
+        try:
+            await self._open()
+        except Exception:
+            # Nothing to resume without a conversation: apologise and hang up.
+            await self._technical_problem("Could not open the conversation")
+            await self.close(code=INTERNAL_ERROR_CLOSE_CODE)
+
+    async def _open(self) -> None:
         # The route's uuid converter already parsed it.
         conversation_id: UUID | None = self.scope["url_route"]["kwargs"].get("conversation_id")
         if conversation_id is None:
@@ -71,6 +80,14 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             await self.channel_layer.group_discard(group, self.channel_name)
 
     async def receive_json(self, content: Any, **kwargs: Any) -> None:
+        try:
+            await self._receive(content)
+        except Exception:
+            # The trace records the exception as it leaves it; the conversation is as it was
+            # stored before this message, so the declarant can say it again.
+            await self._technical_problem("Could not handle the message")
+
+    async def _receive(self, content: Any) -> None:
         if not isinstance(content, dict):
             await self._error("messages must be JSON objects")
             return
@@ -151,6 +168,14 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         except binascii.Error:
             await self._error("audio data must be base64")
             return None
+
+    async def _technical_problem(self, log_message: str) -> None:
+        """Log the exception being handled and apologise from the template."""
+        conversation_id = getattr(self, "conversation_id", None)
+        logger.exception(
+            log_message, extra={"conversation_id": conversation_id and str(conversation_id)}
+        )
+        await self.send_json(bot_message_event(templates.technical_problem()))
 
     async def _error(self, message: str) -> None:
         await self.send_json({"type": "error", "message": message})
