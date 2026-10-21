@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import Any, Self
 
 import httpx
+import httpx2
 import openai
 from openai.types import CompletionUsage, ReasoningEffort
 from openai.types.chat import (
@@ -32,6 +33,11 @@ TTS_SAMPLE_RATE = 24_000
 TIMEOUT_SECONDS = 30.0
 # Per chat request; the engine also bounds the whole turn (TURN_DEADLINE_SECONDS).
 CHAT_TIMEOUT_SECONDS = 10.0
+# Idle connections stay open between turns: the declarant usually talks for longer than
+# httpx's default 5 s, and a new connection to openrouter.ai costs ~50 ms more (TCP and TLS),
+# sometimes 0.5 s. OpenRouter kept idle connections for 80 s and more; closing them sooner on
+# this side avoids sending a request on one it is closing.
+KEEPALIVE_SECONDS = 60.0
 
 
 def _to_openai(message: Message) -> ChatCompletionMessageParam:
@@ -86,9 +92,22 @@ class OpenRouterChatModel:
         self._model = model
 
     @classmethod
-    def create(cls, api_key: str) -> "OpenRouterChatModel":
+    def create(cls, api_key: str, *, base_url: str = BASE_URL) -> "OpenRouterChatModel":
         client = openai.AsyncOpenAI(
-            api_key=api_key, base_url=BASE_URL, timeout=CHAT_TIMEOUT_SECONDS, max_retries=0
+            api_key=api_key,
+            base_url=base_url,
+            timeout=CHAT_TIMEOUT_SECONDS,
+            max_retries=0,
+            # The SDK's own client (httpx2) and pool sizes, with a longer keep-alive.
+            http_client=openai.DefaultAsyncHttpxClient(
+                limits=httpx2.Limits(
+                    max_connections=openai.DEFAULT_CONNECTION_LIMITS.max_connections,
+                    max_keepalive_connections=(
+                        openai.DEFAULT_CONNECTION_LIMITS.max_keepalive_connections
+                    ),
+                    keepalive_expiry=KEEPALIVE_SECONDS,
+                )
+            ),
         )
         return cls(client)
 
@@ -140,8 +159,14 @@ class _OpenRouterAudio:
     """Keeps one pooled client for its lifetime, so turns reuse its connections (no new TLS
     handshake per request); `aclose` closes it, a client passed in too."""
 
-    def __init__(self, api_key: str, client: httpx.AsyncClient | None = None) -> None:
-        self._client = client or httpx.AsyncClient(base_url=BASE_URL, timeout=TIMEOUT_SECONDS)
+    def __init__(
+        self, api_key: str, client: httpx.AsyncClient | None = None, *, base_url: str = BASE_URL
+    ) -> None:
+        self._client = client or httpx.AsyncClient(
+            base_url=base_url,
+            timeout=TIMEOUT_SECONDS,
+            limits=httpx.Limits(keepalive_expiry=KEEPALIVE_SECONDS),
+        )
         self._headers = {"Authorization": f"Bearer {api_key}"}
 
     async def aclose(self) -> None:
@@ -166,11 +191,17 @@ class _OpenRouterAudio:
 
 
 class OpenRouterSpeechToText(_OpenRouterAudio):
-    async def transcribe(self, wav: bytes) -> str:
+    async def transcribe(self, audio: bytes) -> str:
+        # MAI Transcribe takes Ogg Opus as well as WAV (not WebM nor MP4); the browser sends
+        # Ogg where it can encode it, ~12 times smaller.
+        if audio.startswith(b"OggS"):
+            upload = ("utterance.ogg", audio, "audio/ogg")
+        else:
+            upload = ("utterance.wav", audio, "audio/wav")
         response = await self._post(
             "/audio/transcriptions",
             data={"model": STT_MODEL, "language": "es"},
-            files={"file": ("utterance.wav", wav, "audio/wav")},
+            files={"file": upload},
         )
         try:
             return str(response.json()["text"])

@@ -11,7 +11,7 @@ export function TalkButton({
 }: {
   disabled: boolean
   onRecordingChange: (recording: boolean) => void
-  onUtterance: (wav: ArrayBuffer) => void
+  onUtterance: (audio: ArrayBuffer) => void
   onError: (message: string) => void
 }) {
   const recorder = useRef(new Recorder())

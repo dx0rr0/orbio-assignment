@@ -90,9 +90,9 @@ export default function App() {
                 setRecording(value)
                 if (value) stopSpeaking() // talking over the agent interrupts it
               }}
-              onUtterance={(wav) => {
+              onUtterance={(audio) => {
                 setMicError(null)
-                sendAudio(wav)
+                sendAudio(audio)
               }}
               onError={setMicError}
             />

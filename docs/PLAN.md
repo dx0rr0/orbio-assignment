@@ -65,7 +65,7 @@ Agreed scope for v0 of the auto claim intake voice agent. Vocabulary follows [GL
   - Postgres with `JSONField` ([ADR-0003](adr/0003-postgres-with-django-jsonfield.md)).
   - Redis (Channels layer and Celery broker) and Celery: `generate_claim_summary` after confirmation; `queue_missing_summaries` every 5 minutes re-queues it for confirmed claims that have none; `sweep_abandoned_conversations` with beat every minute (10 min of inactivity → `incomplete` / `abandoned`). The sweep selects the idle conversations and closes each with the domain's `close` (which records the pending fields) and the same versioned conditional `UPDATE` as a turn, so a turn that saved since the select wins; a turn marks the conversation active before calling the LLM, so a conversation receiving a turn is never swept.
   - Everything runs with `docker compose`.
-- **WebSocket protocol**: the client sends `audio` (WAV 16 kHz mono, encoded in the browser) or `text` (dev mode only in the UI; used by the evals). The server emits `transcript`, `bot_message`, `claim_updated` and `audio`.
+- **WebSocket protocol**: the client sends `audio` (Ogg Opus encoded in the browser with WebCodecs, or WAV 16 kHz mono where it can't) or `text` (dev mode only in the UI; used by the evals). The server emits `transcript`, `bot_message`, `claim_updated` and `audio`.
 - **Models** (all through OpenRouter, each behind a port):
   - LLM: `openai/gpt-6-luna` (chat completions with tools).
   - STT: `microsoft/mai-transcribe-2` (`POST /api/v1/audio/transcriptions`).

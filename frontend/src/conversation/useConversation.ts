@@ -52,7 +52,7 @@ export function useConversation(resumeId: string | null, playAudio: (wav: Blob, 
   }, [])
 
   const sendAudio = useCallback(
-    (wav: ArrayBuffer) => send({ type: 'audio', data: toBase64(wav) }),
+    (audio: ArrayBuffer) => send({ type: 'audio', data: toBase64(audio) }),
     [send],
   )
   const sendText = useCallback(

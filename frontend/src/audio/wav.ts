@@ -1,4 +1,4 @@
-/** Mono PCM helpers: the backend expects 16 kHz mono 16-bit WAV. */
+/** Mono PCM helpers: where the browser can't encode Opus, it sends 16 kHz mono 16-bit WAV. */
 
 export const TARGET_SAMPLE_RATE = 16_000
 

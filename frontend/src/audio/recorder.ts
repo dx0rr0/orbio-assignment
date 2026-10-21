@@ -1,3 +1,4 @@
+import { OpusRecording } from './opus'
 import { downsample, encodeWav, TARGET_SAMPLE_RATE } from './wav'
 
 // Collects the microphone's samples on the audio thread and posts them to the page.
@@ -12,11 +13,16 @@ class Capture extends AudioWorkletProcessor {
 registerProcessor('capture', Capture)
 `
 
-/** Push-to-talk recorder: `start()` opens the microphone, `stop()` returns a 16 kHz WAV. */
+/**
+ * Push-to-talk recorder: `start()` opens the microphone, `stop()` returns the utterance as
+ * Ogg Opus where the browser can encode it (about a twelfth of the bytes to upload), else as
+ * a 16 kHz WAV.
+ */
 export class Recorder {
   private context: AudioContext | null = null
   private stream: MediaStream | null = null
   private chunks: Float32Array[] = []
+  private opus: OpusRecording | null = null
 
   async start(): Promise<void> {
     this.chunks = []
@@ -24,6 +30,7 @@ export class Recorder {
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     })
     this.context = new AudioContext()
+    this.opus = await OpusRecording.start(this.context.sampleRate)
     const url = URL.createObjectURL(new Blob([CAPTURE_WORKLET], { type: 'text/javascript' }))
     try {
       await this.context.audioWorklet.addModule(url)
@@ -31,16 +38,26 @@ export class Recorder {
       URL.revokeObjectURL(url)
     }
     const capture = new AudioWorkletNode(this.context, 'capture')
-    capture.port.onmessage = (event: MessageEvent<Float32Array>) => this.chunks.push(event.data)
+    capture.port.onmessage = (event: MessageEvent<Float32Array>) => {
+      this.chunks.push(event.data)
+      this.opus?.push(event.data)
+    }
     this.context.createMediaStreamSource(this.stream).connect(capture)
   }
 
   async stop(): Promise<ArrayBuffer> {
     const sampleRate = this.context?.sampleRate ?? TARGET_SAMPLE_RATE
+    const opus = this.opus
+    this.opus = null
     this.stream?.getTracks().forEach((track) => track.stop())
     await this.context?.close()
     this.context = null
     this.stream = null
+    const ogg = await opus?.finish()
+    if (ogg) {
+      this.chunks = []
+      return ogg
+    }
 
     const samples = new Float32Array(this.chunks.reduce((total, c) => total + c.length, 0))
     let offset = 0
