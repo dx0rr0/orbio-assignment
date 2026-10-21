@@ -90,7 +90,7 @@ Ground rules for whoever fixes them:
 ### B9. Lifecycle of the HTTP clients
 
 - [x] Fixed in 4c72fe6
-- **Status (2026-10-21):** the speech adapters keep one pooled client each for the life of the process and close it on ASGI lifespan shutdown (`ConsumerServices.aclose`). The summary task still builds a chat client per task on purpose: each task runs in its own event loop (async_to_sync), and a client is bound to the loop it first ran on; closing it needs an `aclose` on the chat model adapter.
+- **Status (2026-10-21):** the speech adapters keep one pooled client each for the life of the process and close it on ASGI lifespan shutdown (`ConsumerServices.aclose`). The consumer's chat client is closed the same way. The summary task opens a chat client per task on purpose (each task runs in its own event loop, and a client is bound to the loop it first ran on) and closes it when the task is done with it (`open_chat_model`).
 - **Where:** `src/claims_agent/adapters/openrouter.py` (around line 94, `httpx.AsyncClient` never closed); `src/claims_service/intake/tasks.py` (around line 43, a new client per task).
 - **Expected:** one client per process, closed on shutdown.
 - **Fix:** create the clients once (module-level factory or app/worker startup) and close them on ASGI lifespan shutdown and Celery `worker_shutdown`.

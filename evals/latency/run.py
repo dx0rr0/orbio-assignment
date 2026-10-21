@@ -141,7 +141,15 @@ class MeteredChatModel:
             latency = round(time.perf_counter() - started, 3)
             self._meter.llm_calls.append({"latency_s": latency, "error": repr(error)})
             raise
-        self._meter.llm_calls.append({"latency_s": round(time.perf_counter() - started, 3)})
+        usage = completion.usage
+        self._meter.llm_calls.append(
+            {
+                "latency_s": round(time.perf_counter() - started, 3),
+                "input_tokens": usage.input_tokens if usage else 0,
+                "cached_input_tokens": usage.cached_input_tokens if usage else 0,
+                "output_tokens": usage.output_tokens if usage else 0,
+            }
+        )
         return completion
 
 
@@ -321,6 +329,10 @@ async def run_case(case: Case, harness: Harness) -> dict[str, Any]:
         "llm_calls": len(meter.llm_calls),
         "llm_failed": sum("error" in c for c in meter.llm_calls),
         "llm_s": round(sum(c["latency_s"] for c in meter.llm_calls), 3),
+        "usage": {
+            name: sum(c.get(name, 0) for c in meter.llm_calls)
+            for name in ("input_tokens", "cached_input_tokens", "output_tokens")
+        },
         "replies": replies,
         "status": "ok",
         "_trace": trace_of(after),

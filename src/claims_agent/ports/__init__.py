@@ -1,6 +1,6 @@
 """Async interfaces the engine needs from the outside world; adapters implement them."""
 
-from claims_agent.ports.llm import ChatModel, Completion, FunctionSpec, LLMError, ToolSpec
+from claims_agent.ports.llm import ChatModel, Completion, FunctionSpec, LLMError, ToolSpec, Usage
 from claims_agent.ports.repository import (
     ConcurrentUpdateError,
     ConversationNotFoundError,
@@ -24,4 +24,5 @@ __all__ = [
     "Telemetry",
     "TextToSpeech",
     "ToolSpec",
+    "Usage",
 ]

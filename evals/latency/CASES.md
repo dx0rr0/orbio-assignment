@@ -36,7 +36,7 @@ Grading is programmatic, no LLM judge: each case has checks on the claim after t
 - **TTFA** (`ttfa_s`): seconds from sending the audio to the first `audio` event, measured on the WebSocket.
 - **Breakdown:** `stt_s` (until the transcript event), `engine_s` (transcript → first bot message), `tts_first_s` (first bot message → first audio).
 - **End of a case:** once the claim update and the first audio are out. Waiting for silence instead would cancel the consumer (an asgiref receive timeout does that).
-- **LLM:** number of calls, how many failed, and total LLM seconds (failed calls included). Tokens are not recorded: the chat model port does not return usage; cost comes from the key (below).
+- **LLM:** number of calls, how many failed, and total LLM seconds (failed calls included). Tokens (`usage`): input, of which served from the provider's prompt cache, and output, summed over the turn's calls.
 - **Cost:** per run only, in `summary.json` (total and per case): the key's usage lags a few seconds behind the calls, so it can't be split per case.
 - **Warm-up:** one unrecorded R05 turn runs before the first case, so the cold start (TLS handshakes, the first LLM call) is not charged to whichever case comes first. It is paid for, and counted in the cost per case.
 - **Infrastructure errors** stop the run and go to `errors.jsonl` instead of being scored: a failed transcription or synthesis (with the provider's reason, as soon as the voice reports it, instead of waiting for audio until the case timeout), an `error` event, or a reply with the technical-problem template, which the engine sends after LLM failures (the failed calls are recorded with it).

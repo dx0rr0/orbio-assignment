@@ -10,9 +10,18 @@ class LLMError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class Usage:
+    input_tokens: int
+    output_tokens: int
+    # Input tokens the provider served from its prompt cache.
+    cached_input_tokens: int = 0
+
+
+@dataclass(frozen=True)
 class Completion:
     content: str | None
     tool_calls: tuple[ToolCall, ...] = ()
+    usage: Usage | None = None
 
 
 class FunctionSpec(TypedDict):

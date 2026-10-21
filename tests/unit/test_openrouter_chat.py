@@ -7,6 +7,7 @@ import pytest
 from claims_agent.adapters.openrouter import BASE_URL, OpenRouterChatModel
 from claims_agent.domain import Message, Role, ToolCall
 from claims_agent.engine.tools import TOOLS
+from claims_agent.ports import Usage
 
 COMPLETION = {
     "id": "gen-1",
@@ -23,10 +24,10 @@ COMPLETION = {
 }
 
 
-def chat_model(requests: list[dict]) -> OpenRouterChatModel:
+def chat_model(requests: list[dict], response: dict = COMPLETION) -> OpenRouterChatModel:
     def handle(request: httpx.Request) -> httpx.Response:
         requests.append(json.loads(request.content))
-        return httpx.Response(200, json=COMPLETION)
+        return httpx.Response(200, json=response)
 
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
     return OpenRouterChatModel(
@@ -76,3 +77,17 @@ async def test_a_tool_message_without_its_call_id_is_not_sent():
         await chat_model(requests).complete(system="", messages=[orphan], tools=[])
 
     assert requests == []
+
+
+async def test_the_completion_carries_the_token_usage_including_cached_input():
+    usage = {
+        "prompt_tokens": 1200,
+        "completion_tokens": 40,
+        "total_tokens": 1240,
+        "prompt_tokens_details": {"cached_tokens": 1024},
+    }
+    llm = chat_model([], COMPLETION | {"usage": usage})
+
+    completion = await llm.complete(system="Eres un asistente.", messages=[], tools=())
+
+    assert completion.usage == Usage(input_tokens=1200, output_tokens=40, cached_input_tokens=1024)

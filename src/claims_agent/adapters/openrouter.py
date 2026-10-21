@@ -7,6 +7,7 @@ from typing import Any, Self
 
 import httpx
 import openai
+from openai.types import CompletionUsage
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionMessageParam,
@@ -14,7 +15,7 @@ from openai.types.chat import (
 )
 
 from claims_agent.domain import Message, Role, ToolCall
-from claims_agent.ports import Completion, LLMError, SpeechError, ToolSpec
+from claims_agent.ports import Completion, LLMError, SpeechError, ToolSpec, Usage
 
 BASE_URL = "https://openrouter.ai/api/v1"
 CHAT_MODEL = "openai/gpt-6-luna"
@@ -112,7 +113,23 @@ class OpenRouterChatModel:
             for call in message.tool_calls or ()
             if call.type == "function"
         )
-        return Completion(content=message.content, tool_calls=tool_calls)
+        return Completion(
+            content=message.content, tool_calls=tool_calls, usage=_usage(response.usage)
+        )
+
+    async def aclose(self) -> None:
+        await self._client.close()
+
+
+def _usage(usage: CompletionUsage | None) -> Usage | None:
+    if usage is None:
+        return None
+    details = usage.prompt_tokens_details
+    return Usage(
+        input_tokens=usage.prompt_tokens,
+        output_tokens=usage.completion_tokens,
+        cached_input_tokens=(details.cached_tokens or 0) if details else 0,
+    )
 
 
 class _OpenRouterAudio:

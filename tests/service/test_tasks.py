@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import timedelta
 
@@ -46,7 +47,7 @@ def task_services(repository, llm, notified, queued) -> TaskServices:
     services = TaskServices(
         repository=repository,
         telemetry=NullTelemetry(),
-        new_chat_model=lambda: llm,
+        open_chat_model=lambda: nullcontext(llm),
         notify=notified.append,
         queue_summary=queued.append,
     )

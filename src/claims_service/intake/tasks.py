@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import timedelta
 from uuid import UUID
@@ -39,7 +40,7 @@ class TaskServices:
     telemetry: Telemetry
     # Called once per summary: a client is bound to the event loop it first ran on, and each
     # task runs in its own (async_to_sync).
-    new_chat_model: Callable[[], ChatModel]
+    open_chat_model: Callable[[], AbstractAsyncContextManager[ChatModel]]
     # Pushes the new claim state to whoever is watching the conversation.
     notify: Callable[[Conversation], None]
     queue_summary: Callable[[str], None]
@@ -101,14 +102,14 @@ class _SummaryTask(Task):
 def generate_claim_summary(conversation_id: str) -> None:
     services = _configured()
     repository = services.repository
-    llm = services.new_chat_model()
     telemetry = services.telemetry
 
     async def run() -> Conversation | None:
         conversation = await repository.get(UUID(conversation_id))
         if conversation.claim.status is not ClaimStatus.CONFIRMED or conversation.summary:
             return None
-        summary = await summarize(llm, conversation)
+        async with services.open_chat_model() as llm:
+            summary = await summarize(llm, conversation)
         _check_summary(summary.key_points, conversation, telemetry)
         return await repository.save(conversation.model_copy(update={"summary": summary}))
 
