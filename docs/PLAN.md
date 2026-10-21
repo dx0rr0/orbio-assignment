@@ -63,7 +63,7 @@ Agreed scope for v0 of the auto claim intake voice agent. Vocabulary follows [GL
 - **Stack**
   - Django with async views, django-ninja for HTTP and Channels for WebSocket ([ADR-0004](adr/0004-django-channels-websocket-for-turns.md)).
   - Postgres with `JSONField` ([ADR-0003](adr/0003-postgres-with-django-jsonfield.md)).
-  - Redis (Channels layer and Celery broker) and Celery: `generate_claim_summary` after confirmation; `queue_missing_summaries` every 5 minutes re-queues it for confirmed claims that have none; `sweep_abandoned_conversations` with beat every minute (10 min of inactivity → `incomplete` / `abandoned`), written as one atomic conditional `UPDATE`.
+  - Redis (Channels layer and Celery broker) and Celery: `generate_claim_summary` after confirmation; `queue_missing_summaries` every 5 minutes re-queues it for confirmed claims that have none; `sweep_abandoned_conversations` with beat every minute (10 min of inactivity → `incomplete` / `abandoned`). The sweep selects the idle conversations and closes each with the domain's `close` (which records the pending fields) and the same versioned conditional `UPDATE` as a turn, so a turn that saved since the select wins; a turn marks the conversation active before calling the LLM, so a conversation receiving a turn is never swept.
   - Everything runs with `docker compose`.
 - **WebSocket protocol**: the client sends `audio` (WAV 16 kHz mono, encoded in the browser) or `text` (dev mode only in the UI; used by the evals). The server emits `transcript`, `bot_message`, `claim_updated` and `audio`.
 - **Models** (all through OpenRouter, each behind a port):
