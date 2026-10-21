@@ -376,6 +376,12 @@ CASES: tuple[Case, ...] = (
 )
 
 
+# Held out from the hill-climb rounds, one per kind of case, and run only to validate the
+# result: rounds are measured on the rest (train), so a change can't be fitted to these.
+TEST_IDS = frozenset({"1b", "3a", "R03", "R07", "R10", "R12", "R16"})
+assert {case.id for case in CASES} >= TEST_IDS
+
+
 def resolve(known: Mapping[str, Any], now: datetime) -> dict[str, Any]:
     """`known` with its relative placeholders turned into dates for `now`."""
     yesterday_19 = datetime.combine(

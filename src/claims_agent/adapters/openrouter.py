@@ -103,6 +103,9 @@ class _OpenRouterAudio:
         try:
             response = await self._client.post(path, headers=self._headers, **kwargs)
             response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            # The body says why (OpenRouter's 402s name the limit that was hit).
+            raise SpeechError(f"{path}: {error}: {error.response.text[:300]}") from error
         except httpx.HTTPError as error:
             raise SpeechError(f"{path}: {error}") from error
         return response

@@ -2,6 +2,7 @@
 consumer, with the real STT, LLM and TTS on OpenRouter (see docs/LATENCY.md).
 
     uv run --env-file .env --env-file .env.eval python -m evals.latency.run --variant baseline
+    uv run ... python -m evals.latency.run --variant v1 --split train
     uv run ... python -m evals.latency.run --variant v1 --cases R05 R10 --reps 2
 
 The conversation each case starts from is put in an in-memory repository, so nothing touches
@@ -49,7 +50,7 @@ from claims_agent.domain import (
     policy_number_to_look_up,
 )
 from claims_agent.seed import seed_policies
-from evals.latency.cases import CASES, Case, read_back_text, resolve
+from evals.latency.cases import CASES, TEST_IDS, Case, read_back_text, resolve
 
 ROOT = Path(__file__).resolve().parents[2]
 FLOW = ROOT / ".claude" / "hillclimb" / "ttfa"
@@ -165,7 +166,11 @@ async def run_case(
     wav = (AUDIO / case.audio).read_bytes()
     METER.llm_calls.clear()
 
-    communicator = WebsocketCommunicator(application, f"/ws/conversations/{conversation.id}/")
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/conversations/{conversation.id}/?token=eval",
+        headers=[(b"origin", b"http://localhost")],
+    )
     marks: dict[str, float] = {}
     replies: list[str] = []
     transcript = ""
@@ -185,6 +190,8 @@ async def run_case(
             marks.setdefault(kind, round(time.perf_counter() - started, 3))
             if kind == "transcript":
                 transcript = event["text"]
+                if not transcript:
+                    raise RuntimeError("empty transcript (the STT failed)")
             elif kind == "bot_message":
                 replies.append(event["text"])
             elif kind == "error":
@@ -231,19 +238,31 @@ def percentile(values: list[float], q: float) -> float:
     return ordered[min(len(ordered) - 1, round(q * (len(ordered) - 1)))]
 
 
-async def run(variant: str, case_ids: list[str] | None, reps: int) -> int:
+async def run(variant: str, case_ids: list[str] | None, reps: int, split: str = "all") -> int:
     import django
 
     django.setup()
     openai.AsyncOpenAI = MeteredAsyncOpenAI  # type: ignore[misc]
 
     from claims_service.asgi import application
-    from claims_service.intake import services
+    from claims_service.intake import access, services
 
     repository = InMemoryConversationRepository(seed_policies(datetime.now(MADRID).date()))
     services.repository = lambda: repository  # type: ignore[assignment]
 
-    cases = [c for c in CASES if case_ids is None or c.id in case_ids]
+    # Access tokens live in Postgres, the conversations here in memory; checking one is part of
+    # connecting, not of the turn being measured.
+    async def authorized(conversation_id: Any, token: str | None) -> bool:
+        return True
+
+    access.is_authorized = authorized  # type: ignore[assignment]
+
+    cases = [
+        c
+        for c in CASES
+        if (case_ids is None or c.id in case_ids)
+        and (split == "all" or (c.id in TEST_IDS) == (split == "test"))
+    ]
     out = FLOW / variant
     (out / "traces").mkdir(parents=True, exist_ok=True)
     results_path = out / "results.jsonl"
@@ -279,8 +298,9 @@ async def run(variant: str, case_ids: list[str] | None, reps: int) -> int:
                         )
                         + "\n"
                     )
-                print(f"  {case.id} rep{rep}: ERROR {error!r}")
-                continue
+                # Infrastructure fails the same way for every case: stop before paying for more.
+                print(f"  {case.id} rep{rep}: ERROR {error!r}; stopping the run")
+                return 4
             row["rep"] = rep
             trace = row.pop("_trace")
             (out / "traces" / f"{case.id}_rep{rep}.json").write_text(
@@ -301,8 +321,8 @@ async def run(variant: str, case_ids: list[str] | None, reps: int) -> int:
     spent = key_usage() - start_usage
     ran = sum(1 for rep in range(reps) for case in cases if (case.id, rep) not in done)
     summary: dict[str, Any] = {
-        "spent_this_run_usd": round(spent, 4),
-        "cost_per_case_usd": round(spent / ran, 5) if ran else None,
+        "spent_this_run_usd": round(spent, 6),
+        "cost_per_case_usd": round(spent / ran, 6) if ran else None,
     }
     rows = (
         [json.loads(line) for line in results_path.read_text(encoding="utf-8").splitlines()]
@@ -329,6 +349,12 @@ def main() -> int:
     parser.add_argument("--cases", nargs="*", help="case ids (default: all)")
     parser.add_argument("--reps", type=int, default=1)
     parser.add_argument(
+        "--split",
+        choices=["all", "train", "test"],
+        default="all",
+        help="rounds run on train; test only validates the result",
+    )
+    parser.add_argument(
         "--approve-harness",
         action="store_true",
         help="record the current runner and cases as approved (the user's call)",
@@ -347,7 +373,7 @@ def main() -> int:
             "again with --approve-harness"
         )
         return 2
-    return asyncio.run(run(args.variant, args.cases, args.reps))
+    return asyncio.run(run(args.variant, args.cases, args.reps, args.split))
 
 
 if __name__ == "__main__":

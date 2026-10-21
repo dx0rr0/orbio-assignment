@@ -2,6 +2,8 @@
 
 20 single-turn cases: the 16 recordings scripted in [../recordings.md](../recordings.md) plus four clips of the e2e fixtures. The source of truth is [cases.py](cases.py); this table is for review.
 
+**Split:** the hill-climb rounds run on 13 cases (`--split train`); 1b, 3a, R03, R07, R10, R12 and R16 (one of each kind) are held out as `test` (`TEST_IDS` in cases.py) and only validate the result.
+
 Grading is programmatic, no LLM judge: each case has checks on the claim after the turn (and, for R11, on what the agent said). `pass` is 1 when every check holds; `checks` is the fraction that hold. Times are checked with a tolerance (±45 min unless noted) and days relative to the day the case runs.
 
 | id | tags | starts from | the agent just said | utterance | checks |
