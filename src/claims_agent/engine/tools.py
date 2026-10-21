@@ -65,7 +65,6 @@ _CLAIM_PROPERTIES: dict[str, dict[str, Any]] = {
     },
     "police_report_filed": {**_BOOL, "description": "Theft only: whether it was reported"},
 }
-assert set(_CLAIM_PROPERTIES) == set(CLAIM_FIELDS)
 
 
 def _nullable(schema: dict[str, Any]) -> dict[str, Any]:

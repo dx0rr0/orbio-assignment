@@ -13,6 +13,7 @@ from claims_agent.domain import (
     Claim,
     ClaimStatus,
     ClosureReason,
+    LossLocation,
     LossType,
     LossWindow,
     Policy,
@@ -133,11 +134,10 @@ def emergency_advice() -> BotMessage:
     )
 
 
-def read_back(claim: Claim) -> BotMessage:
-    """The complete claim, for the declarant to confirm. Only valid when nothing is missing."""
-    assert claim.policy_number and claim.plate and claim.loss_type and claim.loss_window
-    assert claim.loss_location
-
+def read_back(incomplete: Claim) -> BotMessage:
+    """The complete claim, for the declarant to confirm. Raises `IncompleteClaimError` if
+    anything is missing."""
+    claim = incomplete.complete()
     location = claim.loss_location
     place = ", ".join(p for p in (location.way, location.municipality) if p)
     place = f"{place} ({location.province})"
@@ -156,7 +156,7 @@ def read_back(claim: Claim) -> BotMessage:
             f"{format_loss_window(claim.loss_window)}, en {place}.",
             None,
         ),
-        (f"Descripción: {_sentence(claim.description or '')}", None),
+        (f"Descripción: {_sentence(claim.description)}", None),
         (
             f"Heridos: {_yes_no(claim.injuries)}. "
             f"Vehículo inmovilizado: {_yes_no(claim.vehicle_immobilized)}.",
@@ -164,9 +164,8 @@ def read_back(claim: Claim) -> BotMessage:
         ),
     ]
     if claim.loss_type is LossType.COLLISION:
-        if claim.other_vehicle_involved:
-            plate = claim.other_vehicle_plate
-            assert plate
+        # Set exactly when another vehicle was involved.
+        if (plate := claim.other_vehicle_plate) is not None:
             report = f"Parte amistoso firmado: {_yes_no(claim.friendly_report_signed)}."
             lines.append(
                 (
@@ -191,27 +190,33 @@ def read_back(claim: Claim) -> BotMessage:
 
 def confirm_coverage_value(claim: Claim, policy: Policy | None) -> BotMessage:
     """Asks the declarant to confirm the value that would leave the loss uncovered, before the
-    claim closes over it. `policy` is the claim's identified policy."""
-    if claim.coverage_issue is ClosureReason.OUTSIDE_SPAIN:
-        assert claim.loss_location
-        place = f"{claim.loss_location.municipality} ({claim.loss_location.country})"
-        return BotMessage(
-            f"Me ha indicado que el siniestro ocurrió en {place}. Por esta vía solo podemos "
-            "tramitar siniestros ocurridos en España. ¿Es correcto el lugar? Si no lo es, "
-            "dígame dónde ocurrió."
-        )
-    assert claim.loss_window and policy
-    outside = (
-        "queda en parte fuera"
-        if claim.coverage_issue is ClosureReason.PARTIAL_COVERAGE
-        else "queda fuera"
-    )
-    return BotMessage(
-        f"Me ha indicado que el siniestro ocurrió {format_loss_window(claim.loss_window)}. "
-        f"Su póliza está en vigor del {_date(policy.start_date)} al {_date(policy.end_date)}, "
-        f"así que esa fecha {outside} de la vigencia. ¿Es correcta? Si no lo es, dígame cuándo "
-        "ocurrió."
-    )
+    claim closes over it. `policy` is the claim's identified policy. Raises `ValueError` if
+    there is no such value, or the value or policy it comes from is missing."""
+    match claim.coverage_issue, claim.loss_location, claim.loss_window, policy:
+        case ClosureReason.OUTSIDE_SPAIN, LossLocation() as location, _, _:
+            place = f"{location.municipality} ({location.country})"
+            return BotMessage(
+                f"Me ha indicado que el siniestro ocurrió en {place}. Por esta vía solo podemos "
+                "tramitar siniestros ocurridos en España. ¿Es correcto el lugar? Si no lo es, "
+                "dígame dónde ocurrió."
+            )
+        case (
+            (ClosureReason.OUTSIDE_COVERAGE_PERIOD | ClosureReason.PARTIAL_COVERAGE) as issue,
+            _,
+            LossWindow() as window,
+            Policy() as policy,
+        ):
+            outside = (
+                "queda en parte fuera" if issue is ClosureReason.PARTIAL_COVERAGE else "queda fuera"
+            )
+            return BotMessage(
+                f"Me ha indicado que el siniestro ocurrió {format_loss_window(window)}. "
+                f"Su póliza está en vigor del {_date(policy.start_date)} al "
+                f"{_date(policy.end_date)}, así que esa fecha {outside} de la vigencia. "
+                "¿Es correcta? Si no lo es, dígame cuándo ocurrió."
+            )
+        case issue, _, _, _:
+            raise ValueError(f"nothing to confirm for coverage issue {issue}")
 
 
 def confirmed(reference: str) -> BotMessage:

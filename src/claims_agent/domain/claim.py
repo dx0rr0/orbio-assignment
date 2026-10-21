@@ -2,9 +2,11 @@
 
 import hashlib
 from enum import StrEnum
+from typing import overload
 
 from pydantic import BaseModel, ConfigDict
 
+from claims_agent.domain.errors import IncompleteClaimError
 from claims_agent.domain.location import LossLocation
 from claims_agent.domain.loss_window import LossWindow
 
@@ -85,6 +87,48 @@ CONDITIONAL_FIELDS: tuple[str, ...] = (
 CLAIM_FIELDS: tuple[str, ...] = BASE_FIELDS + CONDITIONAL_FIELDS
 
 
+@overload
+def _urgency(injuries: bool, vehicle_immobilized: bool) -> Urgency: ...
+@overload
+def _urgency(injuries: bool | None, vehicle_immobilized: bool | None) -> Urgency | None: ...
+def _urgency(injuries: bool | None, vehicle_immobilized: bool | None) -> Urgency | None:
+    if injuries:
+        return Urgency.HIGH
+    if vehicle_immobilized:
+        return Urgency.MEDIUM
+    if injuries is False and vehicle_immobilized is False:
+        return Urgency.LOW
+    return None
+
+
+class CompleteClaim(BaseModel):
+    """The values of a claim with no missing field, typed as present. A conditional field is
+    set exactly when it applies (e.g. `other_vehicle_plate` only in a collision with another
+    vehicle). Built by `Claim.complete`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    policy_number: str
+    plate: str
+    declarant_name: str
+    driver_is_policyholder: bool
+    driver_name: str | None = None
+    loss_type: LossType
+    loss_window: LossWindow
+    loss_location: LossLocation
+    description: str
+    injuries: bool
+    vehicle_immobilized: bool
+    other_vehicle_involved: bool | None = None
+    other_vehicle_plate: str | None = None
+    friendly_report_signed: bool | None = None
+    police_report_filed: bool | None = None
+
+    @property
+    def urgency(self) -> Urgency:
+        return _urgency(self.injuries, self.vehicle_immobilized)
+
+
 class Claim(BaseModel):
     """Only valid values are stored; the last rejection of each field lives in `field_errors`."""
 
@@ -133,6 +177,12 @@ class Claim(BaseModel):
     def missing_fields(self) -> tuple[str, ...]:
         return tuple(f for f in self.required_fields if getattr(self, f) is None)
 
+    def complete(self) -> CompleteClaim:
+        """Its required values. Raises `IncompleteClaimError` if any is missing."""
+        if self.missing_fields:
+            raise IncompleteClaimError(f"missing {', '.join(self.missing_fields)}")
+        return CompleteClaim.model_validate({f: getattr(self, f) for f in self.required_fields})
+
     @property
     def data_fingerprint(self) -> str:
         """Changes whenever a field value changes, and only then."""
@@ -156,13 +206,7 @@ class Claim(BaseModel):
     @property
     def urgency(self) -> Urgency | None:
         """Derived, never asked: None until the data that decides it is known."""
-        if self.injuries:
-            return Urgency.HIGH
-        if self.vehicle_immobilized:
-            return Urgency.MEDIUM
-        if self.injuries is False and self.vehicle_immobilized is False:
-            return Urgency.LOW
-        return None
+        return _urgency(self.injuries, self.vehicle_immobilized)
 
 
 def format_reference(year: int, sequence: int) -> str:

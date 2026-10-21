@@ -5,13 +5,19 @@ from claims_agent.domain.claim import (
     Claim,
     ClaimStatus,
     ClosureReason,
+    CompleteClaim,
     LossType,
     PendingField,
     Urgency,
     format_reference,
 )
 from claims_agent.domain.conversation import ClaimSummary, Conversation, Message, Role, ToolCall
-from claims_agent.domain.errors import ClaimClosedError, FieldError, InvalidTransitionError
+from claims_agent.domain.errors import (
+    ClaimClosedError,
+    FieldError,
+    IncompleteClaimError,
+    InvalidTransitionError,
+)
 from claims_agent.domain.lifecycle import (
     MAX_FAILED_ATTEMPTS,
     UpdateResult,
@@ -35,9 +41,11 @@ __all__ = [
     "ClaimStatus",
     "ClaimSummary",
     "ClosureReason",
+    "CompleteClaim",
     "Conversation",
     "Coverage",
     "FieldError",
+    "IncompleteClaimError",
     "InvalidTransitionError",
     "LossLocation",
     "LossType",

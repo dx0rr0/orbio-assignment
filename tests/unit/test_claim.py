@@ -1,6 +1,14 @@
 import pytest
 
-from claims_agent.domain import Claim, LossType, Urgency, format_reference
+from claims_agent.domain import (
+    Claim,
+    IncompleteClaimError,
+    LossType,
+    Urgency,
+    apply_update,
+    format_reference,
+)
+from tests.engine.fakes import COMPLETE, HAPPY_POLICY, NOW
 
 
 def test_base_claim_requires_base_fields_in_asking_order():
@@ -55,3 +63,20 @@ def test_urgency_is_derived_from_injuries_and_immobilized_vehicle(injuries, immo
 
 def test_reference_format():
     assert format_reference(2026, 123) == "SIN-2026-000123"
+
+
+def test_a_complete_claim_keeps_only_the_values_that_apply():
+    claim = apply_update(Claim(), COMPLETE, policy=HAPPY_POLICY, now=NOW).claim
+    stale = claim.model_copy(update={"driver_name": "Pedro Ruiz", "other_vehicle_plate": "1234BCD"})
+
+    complete = stale.complete()
+
+    assert complete.plate == claim.plate
+    assert complete.driver_name is None
+    assert complete.other_vehicle_plate is None
+    assert complete.urgency is Urgency.LOW
+
+
+def test_an_incomplete_claim_says_what_it_is_missing():
+    with pytest.raises(IncompleteClaimError, match="missing policy_number, plate, declarant_name"):
+        Claim().complete()
