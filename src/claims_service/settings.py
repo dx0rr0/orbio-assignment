@@ -62,7 +62,11 @@ CELERY_BEAT_SCHEDULE = {
     "sweep-abandoned-conversations": {
         "task": "claims_service.intake.tasks.sweep_abandoned_conversations",
         "schedule": 60.0,
-    }
+    },
+    "queue-missing-summaries": {
+        "task": "claims_service.intake.tasks.queue_missing_summaries",
+        "schedule": 300.0,
+    },
 }
 
 OPENROUTER_API_KEY = _env("OPENROUTER_API_KEY", "")

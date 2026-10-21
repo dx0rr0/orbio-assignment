@@ -21,6 +21,10 @@ from claims_service.intake.repository import DjangoConversationRepository, to_co
 logger = logging.getLogger(__name__)
 
 ABANDONED_AFTER = timedelta(minutes=10)
+# A confirmed claim without a summary this long after confirmation lost its task (e.g. the
+# broker was down); after SUMMARY_GIVE_UP_AFTER it is left to a human.
+SUMMARY_GRACE = timedelta(minutes=5)
+SUMMARY_GIVE_UP_AFTER = timedelta(days=1)
 _ACTIVE = (ClaimStatus.IN_PROGRESS.value, ClaimStatus.PENDING_CONFIRMATION.value)
 
 
@@ -80,3 +84,24 @@ def sweep_abandoned_conversations() -> int:
         logger.info("Conversation abandoned", extra={"conversation_id": str(conversation.id)})
         _notify(saved)
     return closed
+
+
+@shared_task
+def queue_missing_summaries() -> int:
+    """Queue the summary of confirmed claims that have none (an outbox sweep): the web process
+    queues it on confirmation, but does not hold the call up if the broker is down."""
+    now = timezone.now()
+    lost = ConversationRecord.objects.filter(
+        status=ClaimStatus.CONFIRMED.value,
+        document__summary=None,
+        # A turn on a confirmed claim saves nothing, so this is when it was confirmed.
+        updated_at__lt=now - SUMMARY_GRACE,
+        updated_at__gte=now - SUMMARY_GIVE_UP_AFTER,
+    ).values_list("id", flat=True)
+    queued = 0
+    for conversation_id in lost:
+        generate_claim_summary.delay(str(conversation_id))
+        queued += 1
+    if queued:
+        logger.warning("Queued %d lost claim summaries", queued)
+    return queued

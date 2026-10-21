@@ -18,6 +18,7 @@ from contextlib import AbstractContextManager
 from typing import Any
 from uuid import UUID
 
+from asgiref.sync import sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
 from claims_agent.engine import TurnResult
@@ -34,6 +35,8 @@ from claims_service.intake.tasks import generate_claim_summary
 # About a minute of 16 kHz mono 16-bit audio, base64-encoded.
 MAX_AUDIO_BASE64_CHARS = 3_000_000
 NOT_FOUND_CLOSE_CODE = 4404
+# Give up queueing the summary after about a second instead of kombu's default retries.
+SUMMARY_RETRY_POLICY = {"max_retries": 2, "interval_start": 0, "interval_step": 0.5}
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +102,7 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         )
         await self._send_turn(result, reply_audio=reply_audio)
         if result.confirmed_claim:
-            self._request_summary()
+            await self._request_summary()
 
     async def claim_updated(self, event: dict[str, Any]) -> None:
         """Pushed to the group by background tasks (summary, abandonment)."""
@@ -107,10 +110,14 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
 
     # --- helpers --------------------------------------------------------------------------
 
-    def _request_summary(self) -> None:
-        # The claim is already confirmed and announced; a broker outage must not end the call.
+    async def _request_summary(self) -> None:
+        # The claim is already confirmed and announced; a broker outage must not end the call,
+        # and `queue_missing_summaries` queues it later. Publishing is blocking I/O, so it runs
+        # off the event loop, and not in the thread the async ORM shares with other turns.
         try:
-            generate_claim_summary.delay(str(self.conversation_id))
+            await sync_to_async(generate_claim_summary.apply_async, thread_sensitive=False)(
+                args=[str(self.conversation_id)], retry_policy=SUMMARY_RETRY_POLICY
+            )
         except Exception:
             logger.exception(
                 "Could not queue the claim summary",

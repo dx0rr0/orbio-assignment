@@ -16,7 +16,10 @@ from claims_service.intake import services, tasks
 from claims_service.intake.repository import DjangoConversationRepository
 from claims_service.intake.tasks import (
     ABANDONED_AFTER,
+    SUMMARY_GIVE_UP_AFTER,
+    SUMMARY_GRACE,
     generate_claim_summary,
+    queue_missing_summaries,
     sweep_abandoned_conversations,
 )
 from tests.engine.fakes import call
@@ -143,3 +146,23 @@ def test_unconfirmed_claims_get_no_summary(repository, notified, summary_llm):
 
     assert summary_llm.requests == []
     assert async_to_sync(repository.get)(conversation.id).summary is None
+
+
+def test_confirmed_claims_whose_summary_was_never_queued_are_queued(repository, monkeypatch):
+    queued: list[str] = []
+    monkeypatch.setattr(tasks.generate_claim_summary, "delay", queued.append)
+    lost = store(repository, idle=SUMMARY_GRACE + timedelta(minutes=1), claim=confirmed_claim())
+    store(repository, idle=timedelta(0), claim=confirmed_claim())  # its task may be in flight
+    store(repository, idle=SUMMARY_GIVE_UP_AFTER + timedelta(hours=1), claim=confirmed_claim())
+    store(repository, idle=timedelta(hours=1))  # not confirmed
+    summarized = Conversation(
+        claim=confirmed_claim(),
+        summary={"key_points": ["Hecho."], "urgency": "medium", "next_steps": []},
+        created_at=timezone.now() - timedelta(hours=1),
+        updated_at=timezone.now() - timedelta(hours=1),
+    )
+    async_to_sync(repository.create)(summarized)
+
+    assert queue_missing_summaries() == 1
+
+    assert queued == [str(lost.id)]

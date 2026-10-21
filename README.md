@@ -35,7 +35,7 @@ browser ──WAV 16 kHz──▶ WebSocket consumer ──▶ STT ──▶ eng
                                                         ├─ LLM: converses, proposes values via tools
                                                         ├─ domain: validates, decides status / urgency / coverage
                                                         └─ Postgres: conversation document (load → process → save)
-                                        Celery: claim summary after confirmation · abandonment sweep every minute
+                                        Celery: claim summary after confirmation (re-queued if lost) · abandonment sweep
 ```
 
 **Code owns the flow; the LLM converses** ([ADR-0002](docs/adr/0002-code-owns-the-flow-llm-converses.md)). On each turn the LLM talks freely and proposes field values through an `update_claim` tool. Python validates them (policy exists, plate matches it, loss not in the future, province is one of the 52, …) and keeps only valid values. It also decides when the claim is complete, its urgency (from injuries and an immobilized vehicle, never asked), whether the policy covers the loss window, and every status transition. The LLM gets each rejection back as a specific error and explains it to the declarant. Three failures on the same field escalate the claim to an adjuster.

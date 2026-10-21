@@ -1,4 +1,6 @@
+import asyncio
 import base64
+import time
 from uuid import UUID, uuid4
 
 import pytest
@@ -23,8 +25,8 @@ def summary_requests(monkeypatch) -> list[str]:
 
     class FakeTask:
         @staticmethod
-        def delay(conversation_id: str) -> None:
-            requested.append(conversation_id)
+        def apply_async(args: list[str], **options: object) -> None:
+            requested.extend(args)
 
     monkeypatch.setattr(consumers, "generate_claim_summary", FakeTask)
     return requested
@@ -213,7 +215,7 @@ async def test_background_updates_reach_watchers():
 async def test_a_broker_outage_does_not_break_the_confirmation(llm, policies, monkeypatch):
     class BrokenTask:
         @staticmethod
-        def delay(conversation_id: str) -> None:
+        def apply_async(args: list[str], **options: object) -> None:
             raise ConnectionError("redis is down")
 
     monkeypatch.setattr(consumers, "generate_claim_summary", BrokenTask)
@@ -242,4 +244,34 @@ async def test_safety_advice_is_flagged_as_an_alert(llm):
         (templates.emergency_advice().text[:30], True),
         ("Lo siento. ¿Dónde ocurrió?", False),
     ]
+    await communicator.disconnect()
+
+
+async def test_a_slow_broker_does_not_block_the_event_loop(llm, policies, monkeypatch):
+    class SlowTask:
+        @staticmethod
+        def apply_async(args: list[str], **options: object) -> None:
+            time.sleep(0.5)  # kombu retrying a connection, synchronously
+
+    monkeypatch.setattr(consumers, "generate_claim_summary", SlowTask)
+    communicator, _ = await started_conversation()
+    llm.then(call(UPDATE_CLAIM, COMPLETE), call(CONFIRM_CLAIM))
+    await communicator.send_json_to({"type": "text", "text": "Todos los datos"})
+    await receive_until(communicator, "claim_updated")
+
+    gaps: list[float] = []
+
+    async def tick() -> None:
+        last = time.monotonic()
+        for _ in range(20):
+            await asyncio.sleep(0.02)
+            gaps.append(time.monotonic() - last)
+            last = time.monotonic()
+
+    await communicator.send_json_to({"type": "text", "text": "Sí"})
+    await asyncio.gather(tick(), receive_until(communicator, "claim_updated"))
+    # Let the consumer finish queueing before the test tears the database down.
+    await asyncio.sleep(0.6)
+
+    assert max(gaps) < 0.3
     await communicator.disconnect()
