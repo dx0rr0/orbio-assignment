@@ -95,6 +95,17 @@ Ground rules for whoever fixes them:
 - **Expected:** one client per process, closed on shutdown.
 - **Fix:** create the clients once (module-level factory or app/worker startup) and close them on ASGI lifespan shutdown and Celery `worker_shutdown`.
 
+### B13. A correction leaves a stale `description`
+
+- [x] Fixed in f0e38c3
+- **Status (2026-10-21):** the first option: the `description` field now says to keep out the place and the time. The `location_corrected_in_read_back` scenario passed 3/3 with the fix, but also 3/3 without it: with the current chat model (Gemini 3.1 Flash Lite) the description never carried the place, so the bug didn't reproduce. The fix stays as a guard against a model change.
+- **Found:** 2026-10-21, rehearsing the demo video in text with `scripts/chat.py` and the real LLM.
+- **Where:** `src/claims_agent/engine/tools.py` (`description` property, around line 56: "What happened, in the declarant's words, summarized"); `src/claims_agent/engine/prompts.py` (how corrections during the read-back are handled).
+- **Trigger:** the declarant says "ayer sobre las seis, en un semáforo de la calle Madrid, en Getafe, un coche me dio por detrás…". The LLM copies the place into `description` ("En un semáforo de la calle Madrid, en Getafe, otro coche le golpeó por detrás"). During the read-back the declarant corrects "no fue en Getafe, fue en Leganés": `loss_location` becomes Leganés, `description` is not re-proposed, and the second read-back (and the confirmed claim) says both Leganés and Getafe.
+- **Expected:** a confirmed claim has no contradictions between its fields; a correction updates every field that repeats the corrected fact.
+- **Fix:** either keep `description` to what happened, without the place or time (they have their own fields), or tell the LLM to re-propose `description` whenever a correction touches something it mentions. The first is simpler and also shortens the read-back.
+- **Tests:** engine test with a scripted fake LLM is not enough here (the bug is the LLM's choice); cover the prompt/tool wording with an eval scenario: a correction of the location during the read-back, asserting the final `description` doesn't mention the old place.
+
 ## Low
 
 ### B10. An empty `end` in `loss_window` is rejected
