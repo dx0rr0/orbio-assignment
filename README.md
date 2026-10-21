@@ -92,7 +92,7 @@ Logs are one JSON object per line from Django, uvicorn and Celery. With the Lang
 
 All three go through OpenRouter, each behind a port:
 
-- LLM: `google/gemini-3.1-flash-lite`, chat completions with tools, no reasoning (the fastest of the models measured for a turn, with the same extraction).
+- LLM: `anthropic/claude-haiku-5.5`, chat completions with tools, no reasoning. Gemini 3.1 Flash Lite was about 0.3 s faster per call but, without reasoning, invented values the declarant never said or left out ones they did.
 - STT: `microsoft/mai-transcribe-2`. In the spike it transcribed all nine recorded utterances correctly, including policy numbers and plates. The one miss was a run of zeros ("AUT-00000001" lost a digit), so the seeded policy numbers avoid them.
 - TTS: `microsoft/mai-voice-2.1-flash` with the `es-ES-Marta` voice (Spain accent), about 1.5 s faster to the whole reply than `google/gemini-3.8-flash-lite-tts`. It is asked for raw 24 kHz PCM, which the adapter wraps as WAV.
 
