@@ -62,6 +62,8 @@ const ServerEvent = z.discriminatedUnion('type', [
   z.object({ type: z.literal('audio'), mime: z.string(), data: z.base64() }),
   // The next piece of the same reply, played right after the ones before it.
   z.object({ type: z.literal('audio_continued'), mime: z.string(), data: z.base64() }),
+  // After the last piece: the turn's speech is complete (with no pieces if synthesis failed).
+  z.object({ type: z.literal('audio_end') }),
   z.object({ type: z.literal('error'), message: z.string() }),
 ])
 export type ServerEvent = z.infer<typeof ServerEvent>

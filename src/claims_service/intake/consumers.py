@@ -6,12 +6,13 @@ Client → server:
     {"type": "text", "text": "...", "reply_audio": false}    a typed one (dev mode, evals)
 Server → client:
     conversation_started, snapshot, transcript, bot_message, claim_updated, audio,
-    audio_continued, error
+    audio_continued, audio_end, error
 
 The speech of a reply is sent in pieces as it arrives from the provider (sentences are
 synthesized at once, but sent in order): `audio` carries the first piece and starts a new
 reply, `audio_continued` the rest, to be played right after it. `data` is base64 raw PCM,
-16-bit little-endian mono, at the rate in `mime` ("audio/pcm;rate=24000").
+16-bit little-endian mono, at the rate in `mime` ("audio/pcm;rate=24000"). `audio_end` follows
+the last piece, and ends every spoken turn: when synthesis failed it comes with no audio before.
 
 Connecting to /ws/conversations/ starts a conversation (conversation_started carries its
 access token). Connecting to /ws/conversations/<id>/ resumes watching one: the first message
@@ -236,6 +237,7 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
                 data = base64.b64encode(pcm).decode("ascii")
                 await self.send_json({"type": kind, "mime": mime, "data": data})
                 kind = "audio_continued"
+        await self.send_json({"type": "audio_end"})
 
     async def _decode_audio(self, data: str) -> bytes | None:
         """The audio file's bytes, or None after telling the client what was wrong."""

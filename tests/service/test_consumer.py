@@ -44,20 +44,21 @@ async def start(application, path: str = "/ws/conversations/"):
 
 async def started_conversation(application) -> tuple[WebsocketCommunicator, str]:
     communicator = await start(application)
-    events = await receive_until(communicator, "audio")
+    events = await receive_until(communicator, "audio_end")
     return communicator, events[0]["conversation_id"]
 
 
 async def test_connecting_starts_a_conversation_with_a_spoken_greeting(application, tts):
     communicator = await start(application)
 
-    events = await receive_until(communicator, "audio")
+    events = await receive_until(communicator, "audio_end")
 
     assert [e["type"] for e in events] == [
         "conversation_started",
         "bot_message",
         "claim_updated",
         "audio",
+        "audio_end",
     ]
     assert events[1]["text"] == templates.greeting().text
     assert events[2]["claim"]["status"] == "in_progress"
@@ -113,13 +114,14 @@ async def test_a_reply_is_spoken_by_sentence_as_each_one_is_ready(application, l
     llm.then(say("Gracias por la información. ¿Me indica su número de póliza?"))
 
     await communicator.send_json_to({"type": "text", "text": "Hola", "reply_audio": True})
-    events = await receive_until(communicator, "audio_continued")
+    events = await receive_until(communicator, "audio_end")
 
     assert [e["type"] for e in events] == [
         "bot_message",
         "claim_updated",
         "audio",
         "audio_continued",
+        "audio_end",
     ]
     assert tts.spoken[-2:] == ["Gracias por la información.", "¿Me indica su número de póliza?"]
     assert await communicator.receive_nothing()
@@ -134,9 +136,15 @@ async def test_speech_is_sent_in_pieces_as_it_arrives(application, llm, services
 
     await communicator.send_json_to({"type": "text", "text": "Hola", "reply_audio": True})
     events = await receive_until(communicator, "claim_updated")
-    audio = [await communicator.receive_json_from(timeout=5) for _ in range(3)]
+    audio = await receive_until(communicator, "audio_end")
 
-    assert [e["type"] for e in audio] == ["audio", "audio_continued", "audio_continued"]
+    assert [e["type"] for e in audio] == [
+        "audio",
+        "audio_continued",
+        "audio_continued",
+        "audio_end",
+    ]
+    audio = audio[:-1]
     assert {e["mime"] for e in audio} == {"audio/pcm;rate=24000"}
     assert [base64.b64decode(e["data"]) for e in audio] == [piece, piece, b"\x02\x00"]
     assert events[0]["text"] == "¿Me indica su número de póliza?"
@@ -166,7 +174,9 @@ async def test_failed_synthesis_still_sends_the_text(application, llm, tts):
     events = await receive_until(communicator, "claim_updated")
 
     assert events[0]["text"] == "¿Me indica su número de póliza?"
-    assert await communicator.receive_nothing()  # no audio event
+    # No audio, but the end of the turn's speech is still announced.
+    assert await communicator.receive_json_from(timeout=5) == {"type": "audio_end"}
+    assert await communicator.receive_nothing()
     await communicator.disconnect()
 
 

@@ -42,6 +42,10 @@ describe('parseServerEvent', () => {
     expect(parseServerEvent(JSON.stringify(audio))).toEqual(audio)
   })
 
+  it('reads the end of the speech of a reply', () => {
+    expect(parseServerEvent('{"type": "audio_end"}')).toEqual({ type: 'audio_end' })
+  })
+
   const badFields = [{ name: 'plate', state: 'maybe', value: null, error: null }]
 
   it.each([

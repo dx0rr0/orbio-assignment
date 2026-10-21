@@ -28,11 +28,12 @@ async def receive(ws) -> dict:
 
 
 async def turn(ws) -> list[dict]:
-    """Events until the turn's claim update, plus the reply audio that follows it."""
+    """Events until the end of the turn's speech, which ends every turn of a voice call."""
     events = [await receive(ws)]
-    while events[-1]["type"] != "claim_updated":
+    while events[-1]["type"] != "audio_end":
         events.append(await receive(ws))
-    events.append(await receive(ws))  # every turn of a voice conversation is spoken back
+    # A failed synthesis still ends the turn, with no audio before it.
+    assert any(e["type"] == "audio" for e in events), "the reply was not spoken"
     return events
 
 

@@ -80,6 +80,7 @@ function onServerEvent(state: ConversationState, event: ServerEvent): Conversati
       return { ...state, claim: event.claim, summary: event.summary, awaitingReply: false }
     case 'audio':
     case 'audio_continued':
+    case 'audio_end':
       return state
     case 'error':
       return { ...state, error: event.message, awaitingReply: false }
