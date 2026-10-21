@@ -6,8 +6,9 @@ Client → server:
 Server → client:
     conversation_started, transcript, bot_message, claim_updated, audio, error
 
-Connecting to /ws/conversations/ starts a conversation; /ws/conversations/<id>/ resumes
-watching one (its snapshot is sent first). Channels hands this consumer one message at a time,
+Connecting to /ws/conversations/ starts a conversation (conversation_started carries its
+access token); /ws/conversations/<id>/?token=<token> resumes watching one (its snapshot is
+sent first). Channels hands this consumer one message at a time,
 so turns of one connection never overlap.
 """
 
@@ -16,6 +17,7 @@ import binascii
 import logging
 from contextlib import AbstractContextManager
 from typing import Any
+from urllib.parse import parse_qs
 from uuid import UUID
 
 from asgiref.sync import sync_to_async
@@ -23,7 +25,7 @@ from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
 from claims_agent.engine import TurnResult, templates
 from claims_agent.ports import ConcurrentUpdateError, ConversationNotFoundError, Span
-from claims_service.intake import error_messages, services
+from claims_service.intake import access, error_messages, services
 from claims_service.intake.groups import group_name
 from claims_service.intake.presenters import (
     bot_message_event,
@@ -61,12 +63,23 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         conversation_id: UUID | None = self.scope["url_route"]["kwargs"].get("conversation_id")
         if conversation_id is None:
             result = await services.engine().start()
+            token = await access.issue_token(result.conversation.id)
             await self._join(result.conversation.id)
             await self.send_json(
-                {"type": "conversation_started", "conversation_id": str(self.conversation_id)}
+                {
+                    "type": "conversation_started",
+                    "conversation_id": str(self.conversation_id),
+                    "token": token,
+                }
             )
             with self._trace("greeting"):
                 await self._send_turn(result, reply_audio=True)
+            return
+        query = parse_qs(self.scope.get("query_string", b"").decode())
+        token = query.get("token", [None])[0]
+        # A wrong token gets the same answer as an unknown id.
+        if not await access.is_authorized(conversation_id, token):
+            await self.close(code=NOT_FOUND_CLOSE_CODE)
             return
         try:
             conversation = await services.repository().get(conversation_id)

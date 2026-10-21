@@ -17,7 +17,9 @@ cp .env.example .env      # then set OPENROUTER_API_KEY, DJANGO_SECRET_KEY (and 
 docker compose up --build
 ```
 
-Open <http://localhost:8080>, allow the microphone and hold the button (or the space bar) to talk. The page looks like a call in progress: the whole conversation, with the agent's current words shown large, and on the right the claim as stages (identification, driver, what/when/where, damage, other vehicle or police report, confirmation) that fill in as you speak, with validation errors in Spanish. Add `?dev` to the URL to get a text box as well (handy without a microphone); `?conversation=<id>` reopens an existing conversation.
+Open <http://localhost:8080>, allow the microphone and hold the button (or the space bar) to talk. The page looks like a call in progress: the whole conversation, with the agent's current words shown large, and on the right the claim as stages (identification, driver, what/when/where, damage, other vehicle or police report, confirmation) that fill in as you speak, with validation errors in Spanish. Add `?dev` to the URL to get a text box as well (handy without a microphone); `?conversation=<id>` reopens a conversation started in the same browser tab.
+
+There are no accounts in v0. Each new conversation gets a random access token (only its hash is stored), which the page keeps in `sessionStorage`; resuming a conversation over WebSocket (`?token=`) or reading it through `GET /api/conversations/<id>` (`Authorization: Bearer <token>`) needs it, so a conversation can't be reopened from another browser. The list of all conversations, `GET /api/conversations`, is only served with `DJANGO_DEBUG=true`.
 
 Five demo policies are seeded, with dates relative to today, one per scenario:
 
@@ -99,7 +101,7 @@ All three go through OpenRouter, each behind a port:
 - Real-time voice with streaming and barge-in. Turns are push-to-talk today, and a long read-back takes about 30 seconds of audio.
 - Replicas behind a load balancer; rate limits and quotas per provider; model fallback.
 - More languages; other insurance lines (home).
-- Real identity verification; resuming a conversation after it closes; geocoding the loss location.
+- Real identity verification and authentication (staff access to the conversation list, declarants resuming from another device); resuming a conversation after it closes; geocoding the loss location.
 - An offline hallucination judge over Langfuse traces; alerts on failures and on hallucination scores.
 - Multi-tenancy.
 - Bonus features such as RAG over policy conditions or sentiment analysis.

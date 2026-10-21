@@ -23,6 +23,8 @@ class ConversationRecord(models.Model):
     status = models.CharField(max_length=32)
     document = models.JSONField()
     version = models.PositiveIntegerField()
+    # SHA-256 of the conversation's access token (see access.py); kept out of the document.
+    access_token_hash = models.CharField(max_length=64, default="")
     created_at = models.DateTimeField()
     updated_at = models.DateTimeField()
 

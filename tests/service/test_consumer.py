@@ -185,11 +185,14 @@ async def test_confirmation_requests_the_summary(llm, policies, summary_requests
     await communicator.disconnect()
 
 
-async def test_reconnecting_sends_a_snapshot(llm):
-    first, conversation_id = await started_conversation()
+async def test_reconnecting_with_the_token_sends_a_snapshot(llm):
+    first = await start()
+    started = await first.receive_json_from(timeout=5)
+    await receive_until(first, "audio")
     await first.disconnect()
+    conversation_id, token = started["conversation_id"], started["token"]
 
-    communicator = await start(f"/ws/conversations/{conversation_id}/")
+    communicator = await start(f"/ws/conversations/{conversation_id}/?token={token}")
     event = await communicator.receive_json_from(timeout=5)
 
     assert event["type"] == "snapshot"
@@ -202,7 +205,23 @@ async def test_reconnecting_sends_a_snapshot(llm):
 
 async def test_unknown_conversation_is_closed_with_not_found():
     communicator = WebsocketCommunicator(
-        application, f"/ws/conversations/{uuid4()}/", headers=[ORIGIN]
+        application, f"/ws/conversations/{uuid4()}/?token=whatever", headers=[ORIGIN]
+    )
+    await communicator.connect()
+
+    assert await communicator.receive_output(timeout=5) == {
+        "type": "websocket.close",
+        "code": NOT_FOUND_CLOSE_CODE,
+    }
+
+
+@pytest.mark.parametrize("query", ["", "?token=", "?token=not-the-token"])
+async def test_resuming_without_the_token_is_closed_as_not_found(query):
+    # Not found, as for an unknown id: nobody learns which conversation ids exist.
+    first, conversation_id = await started_conversation()
+    await first.disconnect()
+    communicator = WebsocketCommunicator(
+        application, f"/ws/conversations/{conversation_id}/{query}", headers=[ORIGIN]
     )
     await communicator.connect()
 
