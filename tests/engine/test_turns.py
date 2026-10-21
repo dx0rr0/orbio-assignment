@@ -4,7 +4,7 @@ from claims_agent.domain import ClaimStatus, ClosureReason, Role
 from claims_agent.engine import templates, tools
 from claims_agent.engine.tools import CONFIRM_CLAIM, DECLARANT_REFUSES, UPDATE_CLAIM
 from claims_agent.engine.turns import MAX_LLM_FAILURES, MAX_REPEAT_REQUESTS
-from tests.engine.fakes import COMPLETE, IDENTIFICATION, LLM_DOWN, NEW_POLICY, call, say
+from tests.engine.fakes import COMPLETE, IDENTIFICATION, LLM_DOWN, NEW_POLICY, call, calls, say
 
 
 def texts(result) -> list[str]:
@@ -146,6 +146,53 @@ async def test_correction_while_pending_is_read_back_again(engine, llm, conversa
     assert result.conversation.claim.status is ClaimStatus.PENDING_CONFIRMATION
     assert "a las 20:00" in result.replies[0].text
     assert result.replies[0].text.startswith("Le leo los datos")
+
+
+async def test_completing_and_confirming_in_one_response_only_reads_back(
+    engine, llm, conversation_id
+):
+    llm.then(calls(call(UPDATE_CLAIM, COMPLETE), call(CONFIRM_CLAIM)))
+
+    result = await engine.handle_text(conversation_id, "Ya está todo, confírmelo")
+
+    claim = result.conversation.claim
+    assert claim.status is ClaimStatus.PENDING_CONFIRMATION
+    assert claim.reference is None
+    assert texts(result) == [templates.read_back(claim).text]
+    # Every tool call gets a result, so the history stays valid for the next LLM call.
+    [_, skipped] = [m for m in result.conversation.messages if m.role is Role.TOOL]
+    assert "error" in json.loads(skipped.content)
+
+
+async def test_correcting_and_confirming_in_one_response_reads_back_again(
+    engine, llm, conversation_id
+):
+    correction = {"loss_window": {"start": "2026-10-19T20:00", "end": "2026-10-19T20:00"}}
+    llm.then(
+        call(UPDATE_CLAIM, COMPLETE), calls(call(UPDATE_CLAIM, correction), call(CONFIRM_CLAIM))
+    )
+    await engine.handle_text(conversation_id, "Todos los datos")
+
+    result = await engine.handle_text(conversation_id, "Fue a las ocho, confírmelo")
+
+    claim = result.conversation.claim
+    assert claim.status is ClaimStatus.PENDING_CONFIRMATION
+    assert texts(result) == [templates.read_back(claim).text]
+
+
+async def test_confirming_data_that_was_not_read_back_is_refused(engine, llm, conversation_id):
+    # Whatever path got unheard data into a pending claim, it cannot be confirmed.
+    llm.then(call(UPDATE_CLAIM, COMPLETE))
+    await engine.handle_text(conversation_id, "Todos los datos")
+    conversation = await engine._repository.get(conversation_id)
+    unheard = conversation.claim.model_copy(update={"description": "Otra cosa que nadie oyó"})
+    await engine._repository.save(conversation.model_copy(update={"claim": unheard}))
+    llm.then(call(CONFIRM_CLAIM), say("Antes le leo los datos de nuevo."))
+
+    result = await engine.handle_text(conversation_id, "Sí, confírmelo")
+
+    assert result.conversation.claim.status is ClaimStatus.PENDING_CONFIRMATION
+    assert "error" in tool_results(llm.requests[-1])[-1]
 
 
 async def test_no_answer_to_the_read_back_lets_the_llm_ask_what_to_change(

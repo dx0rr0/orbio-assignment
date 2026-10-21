@@ -42,6 +42,15 @@ def call(name: str, arguments: Mapping[str, Any] | str = "{}", *, text: str | No
     return Completion(content=text, tool_calls=(tool_call,))
 
 
+def calls(*completions: Completion) -> Completion:
+    """One completion with the tool calls of several `call(...)`s, in order."""
+    tool_calls = tuple(
+        tc.model_copy(update={"id": f"call-{i}-{tc.name}"})
+        for i, tc in enumerate(tc for c in completions for tc in c.tool_calls)
+    )
+    return Completion(content=None, tool_calls=tool_calls)
+
+
 class ScriptedLLM:
     """Returns the scripted completions (or raises the scripted errors) in order."""
 

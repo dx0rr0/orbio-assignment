@@ -16,7 +16,6 @@ from typing import Any
 from uuid import UUID
 
 from claims_agent.domain import (
-    CLAIM_FIELDS,
     MADRID,
     Claim,
     ClaimStatus,
@@ -91,17 +90,13 @@ def is_unintelligible(utterance: str) -> bool:
     return _WORD.search(utterance) is None
 
 
-def _claim_data(claim: Claim) -> dict[str, Any]:
-    return {name: getattr(claim, name) for name in CLAIM_FIELDS}
-
-
 def _needs_script(before: Claim, after: Claim) -> bool:
     """Whether the claim changed in a way only a template may announce."""
     if after.status.is_final:
         return True
     return after.status is ClaimStatus.PENDING_CONFIRMATION and (
         before.status is not ClaimStatus.PENDING_CONFIRMATION
-        or _claim_data(before) != _claim_data(after)
+        or before.data_fingerprint != after.data_fingerprint
     )
 
 
@@ -180,6 +175,10 @@ class ConversationEngine:
             replies.append(templates.emergency_advice())
         if _needs_script(before, after):
             replies.append(await self._script(after))
+            if after.status is ClaimStatus.PENDING_CONFIRMATION:
+                conversation = conversation.model_copy(
+                    update={"read_back_fingerprint": after.data_fingerprint}
+                )
         elif llm_reply is not None:
             self._check_hallucinations(llm_reply, conversation)
             replies.append(BotMessage(llm_reply, scripted=False))
@@ -224,7 +223,12 @@ class ConversationEngine:
                 Message(role=Role.ASSISTANT, tool_calls=completion.tool_calls)
             )
             for call in completion.tool_calls:
-                conversation, result = await self._run_tool(conversation, call, now)
+                if _needs_script(before, conversation.claim):
+                    # The declarant must hear the template before anything else happens to
+                    # the claim (e.g. a confirmation of data they never heard read back).
+                    result: Mapping[str, Any] = {"error": "not run: the claim changed first"}
+                else:
+                    conversation, result = await self._run_tool(conversation, call, now)
                 conversation = conversation.add(
                     Message(
                         role=Role.TOOL,
@@ -306,6 +310,8 @@ class ConversationEngine:
                 "error": "the claim is not complete yet",
                 "missing_fields": list(claim.missing_fields),
             }
+        if conversation.read_back_fingerprint != claim.data_fingerprint:
+            return conversation, {"error": "the declarant has not heard the current data yet"}
         year = now.astimezone(MADRID).year
         sequence = await self._repository.next_reference_sequence(year)
         claim = confirm(claim, format_reference(year, sequence))

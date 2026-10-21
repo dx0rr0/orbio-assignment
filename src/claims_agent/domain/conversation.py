@@ -63,6 +63,9 @@ class Conversation(BaseModel):
     llm_failure_streak: int = 0
     # How many times the declarant refused to give each field.
     refusals: dict[str, int] = {}
+    # `Claim.data_fingerprint` of the claim in the last read-back sent to the declarant: only
+    # that data can be confirmed.
+    read_back_fingerprint: str | None = None
     summary: ClaimSummary | None = None
     created_at: AwareDatetime
     updated_at: AwareDatetime

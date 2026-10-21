@@ -1,5 +1,6 @@
 """The claim the agent collects, its statuses and the rules derived from its data."""
 
+import hashlib
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
@@ -120,6 +121,12 @@ class Claim(BaseModel):
     @property
     def missing_fields(self) -> tuple[str, ...]:
         return tuple(f for f in self.required_fields if getattr(self, f) is None)
+
+    @property
+    def data_fingerprint(self) -> str:
+        """Changes whenever a field value changes, and only then."""
+        data = self.model_dump_json(include=set(CLAIM_FIELDS))
+        return hashlib.sha256(data.encode()).hexdigest()
 
     @property
     def urgency(self) -> Urgency | None:
