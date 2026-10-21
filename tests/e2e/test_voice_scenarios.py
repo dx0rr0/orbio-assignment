@@ -17,6 +17,7 @@ pytestmark = pytest.mark.e2e
 
 AUDIO = Path(__file__).parent / "fixtures" / "audio"
 WS_URL = os.environ.get("E2E_WS_URL", "ws://localhost:8080/ws/conversations/")
+ORIGIN = os.environ.get("E2E_ORIGIN", "http://localhost:8080")
 # Seconds for one turn: STT + LLM (with retries) + TTS.
 TURN_TIMEOUT = 90
 
@@ -36,7 +37,8 @@ async def turn(ws) -> list[dict]:
 
 
 async def run_scenario(utterances: list[str]) -> list[dict]:
-    async with connect(WS_URL, max_size=None, open_timeout=10) as ws:
+    # The backend only accepts sockets from pages served by an allowed host.
+    async with connect(WS_URL, origin=ORIGIN, max_size=None, open_timeout=10) as ws:
         assert (await receive(ws))["type"] == "conversation_started"
         events = await turn(ws)  # greeting
         for name in utterances:

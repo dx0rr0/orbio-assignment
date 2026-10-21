@@ -40,8 +40,12 @@ async def receive_until(communicator, last_type: str) -> list[dict]:
     return events
 
 
+# Browsers send the page's origin; the frontend is served from an allowed host.
+ORIGIN = (b"origin", b"http://localhost:8080")
+
+
 async def start(path: str = "/ws/conversations/"):
-    communicator = WebsocketCommunicator(application, path)
+    communicator = WebsocketCommunicator(application, path, headers=[ORIGIN])
     connected, _ = await communicator.connect()
     assert connected
     return communicator
@@ -191,7 +195,9 @@ async def test_reconnecting_sends_a_snapshot(llm):
 
 
 async def test_unknown_conversation_is_closed_with_not_found():
-    communicator = WebsocketCommunicator(application, f"/ws/conversations/{uuid4()}/")
+    communicator = WebsocketCommunicator(
+        application, f"/ws/conversations/{uuid4()}/", headers=[ORIGIN]
+    )
     await communicator.connect()
 
     assert await communicator.receive_output(timeout=5) == {
@@ -308,3 +314,12 @@ async def test_an_unexpected_error_when_connecting_apologises(monkeypatch):
     assert event["type"] == "bot_message"
     assert event["text"] == templates.technical_problem().text
     assert (await communicator.receive_output(timeout=5))["type"] == "websocket.close"
+
+
+@pytest.mark.parametrize("headers", [[(b"origin", b"https://evil.example")], []])
+async def test_connections_from_other_origins_are_rejected(headers):
+    communicator = WebsocketCommunicator(application, "/ws/conversations/", headers=headers)
+
+    connected, _ = await communicator.connect()
+
+    assert not connected

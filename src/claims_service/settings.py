@@ -6,7 +6,8 @@ from claims_agent.log_config import json_logging_config
 
 
 def _env(name: str, default: str | None = None) -> str:
-    value = os.environ.get(name, default)
+    # An empty value, as in a copied .env.example, counts as unset.
+    value = os.environ.get(name) or default
     if value is None:
         raise RuntimeError(f"environment variable {name} is required")
     return value

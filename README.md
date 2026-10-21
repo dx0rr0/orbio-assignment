@@ -9,7 +9,7 @@ The vocabulary (loss, claim, declarant, loss window…) is defined in [GLOSSARY.
 You need Docker and an [OpenRouter](https://openrouter.ai) API key. Langfuse is optional.
 
 ```bash
-cp .env.example .env      # then set OPENROUTER_API_KEY (and the LANGFUSE_* keys if you want traces)
+cp .env.example .env      # then set OPENROUTER_API_KEY, DJANGO_SECRET_KEY (and LANGFUSE_* for traces)
 docker compose up --build
 ```
 
@@ -25,7 +25,7 @@ Five demo policies are seeded, with dates relative to today, one per scenario:
 | AUT-73058416 | 6614 LPR | Carlos Moreno Díaz | Started three days ago (a week-old loss is not covered) |
 | AUT-84169527 | 3087 GBN | Elena Sánchez Ortiz | Declare it with another plate to see the mismatch |
 
-Services: `frontend` (nginx serving the React app and proxying `/api` and `/ws`), `backend` (Django on uvicorn), `worker` and `beat` (Celery), `db` (Postgres) and `redis`. The host ports are 8080, 8000, 55432 and 6380, chosen not to clash with local installs.
+Services: `frontend` (nginx serving the React app and proxying `/api` and `/ws`), `backend` (Django on uvicorn), `worker` and `beat` (Celery), `db` (Postgres) and `redis`. Only the frontend is meant for the browser; the backend is reached through its proxy. The host ports are 8080, 55432 and 6380, chosen not to clash with local installs.
 
 ## How it works
 
