@@ -91,3 +91,12 @@ async def test_the_completion_carries_the_token_usage_including_cached_input():
     completion = await llm.complete(system="Eres un asistente.", messages=[], tools=())
 
     assert completion.usage == Usage(input_tokens=1200, output_tokens=40, cached_input_tokens=1024)
+
+
+async def test_the_model_answers_without_reasoning():
+    requests: list[dict] = []
+
+    await chat_model(requests).complete(system="Eres un asistente.", messages=[], tools=TOOLS)
+
+    [request] = requests
+    assert request["reasoning_effort"] == "none"

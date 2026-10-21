@@ -7,7 +7,7 @@ from typing import Any, Self
 
 import httpx
 import openai
-from openai.types import CompletionUsage
+from openai.types import CompletionUsage, ReasoningEffort
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionMessageParam,
@@ -19,6 +19,9 @@ from claims_agent.ports import Completion, LLMError, SpeechError, ToolSpec, Usag
 
 BASE_URL = "https://openrouter.ai/api/v1"
 CHAT_MODEL = "openai/gpt-6-luna"
+# Its default is "medium"; a turn's tool calls and short questions need no reasoning, and
+# reasoning tokens come before the first token of the answer.
+CHAT_REASONING_EFFORT: ReasoningEffort = "none"
 STT_MODEL = "microsoft/mai-transcribe-2"
 TTS_MODEL = "google/gemini-3.8-flash-lite-tts"
 TTS_VOICE = "Kore"
@@ -100,6 +103,7 @@ class OpenRouterChatModel:
                 messages=[{"role": "system", "content": system}, *map(_to_openai, messages)],
                 tools=list(map(_tool_to_openai, tools)),
                 temperature=0.3,
+                reasoning_effort=CHAT_REASONING_EFFORT,
             )
         except openai.OpenAIError as error:
             raise LLMError(str(error)) from error
