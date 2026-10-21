@@ -13,7 +13,7 @@ Ground rules for whoever fixes them:
 
 ### B1. A claim can be confirmed without being read back
 
-- [ ] Fixed
+- [x] Fixed in d38751c
 - **Where:** `src/claims_agent/engine/turns.py` (tool loop around lines 226–236; `_confirm_claim` around line 300).
 - **Trigger:** the LLM returns `[update_claim(<fields completing the claim>), confirm_claim]` in one response (e.g. the declarant says "ya está todo, confírmelo"). Every tool call runs before `_needs_script` is checked, so the claim is `confirmed` with a reference and the read-back is never sent. Same with a correction plus `confirm_claim` while `pending_confirmation`: corrected data nobody heard gets confirmed. A declarant can provoke it on purpose (prompt injection).
 - **Expected:** a claim is confirmed only in a turn after the read-back of exactly its current data was sent.
@@ -22,7 +22,7 @@ Ground rules for whoever fixes them:
 
 ### B2. Policy data is used before the declarant is identified
 
-- [ ] Fixed
+- [x] Fixed in ca8689f
 - **Where:** `src/claims_agent/domain/lifecycle.py` (`known_policy`, around lines 133–136; coverage check in `_next_status`, around lines 180–187); `src/claims_agent/engine/prompts.py` (policyholder name in the system prompt, around line 76); `src/claims_agent/engine/turns.py` (`_policy_of`); `src/claims_agent/engine/templates.py` (`not_covered` message with the coverage dates).
 - **Trigger A:** "AUT-62947105, matrícula 1111 BBB, fue ayer". The plate is rejected, yet the policy still counts as known: coverage is evaluated and the `not_covered` template reads the policy's coverage dates aloud.
 - **Trigger B:** with a wrong plate, the next LLM call already carries the policyholder's name in the system prompt, so "¿a nombre de quién está la póliza?" can leak a third party's personal data.
@@ -50,7 +50,7 @@ Ground rules for whoever fixes them:
 
 ### B5. Celery `.delay()` blocks the event loop
 
-- [ ] Fixed
+- [x] Fixed in e386fb0
 - **Where:** `src/claims_service/intake/consumers.py`, `_request_summary` (around line 113).
 - **Trigger:** with Redis slow or down, kombu's publish (with its connection retries and timeouts) runs synchronously inside the async consumer and freezes every WebSocket handled by that process. The current test only simulates an immediate exception, so it doesn't catch this.
 - **Expected:** queueing the summary never blocks the event loop, and a failure to queue doesn't lose the summary.
@@ -59,7 +59,7 @@ Ground rules for whoever fixes them:
 
 ### B6. The consumer doesn't handle unexpected exceptions
 
-- [ ] Fixed
+- [x] Fixed in fa6c124
 - **Where:** `src/claims_service/intake/consumers.py`, `receive_json` (around lines 70–102; only `ConcurrentUpdateError` is caught) and `connect` (around line 49; nothing is caught).
 - **Trigger:** a Postgres `OperationalError`, a `ConversationNotFoundError` or an assertion in the engine closes the socket with code 1011. No apology is sent, and the declarant's utterance is lost because the engine didn't save.
 - **Expected (PLAN.md error table):** apologise with the `technical_problem` template and keep the conversation stored.
@@ -128,7 +128,7 @@ Ground rules for whoever fixes them:
 
 ### S2. Deployment hardening
 
-- [ ] Fixed
+- [x] Fixed in 2b71e69
 - **Where:** `src/claims_service/asgi.py` (around lines 14–24, no `AllowedHostsOriginValidator`); `docker-compose.yml` (around line 8, `DJANGO_ALLOWED_HOSTS: "*"`; backend port 8000 exposed); `.env.example` (`DJANGO_DEBUG=true`, which compose uses).
 - **Fix:** wrap the WebSocket router in `AllowedHostsOriginValidator`, set explicit allowed hosts, default `DEBUG` to false, and expose only the frontend.
 
