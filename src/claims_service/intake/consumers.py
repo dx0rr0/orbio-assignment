@@ -8,9 +8,10 @@ Server → client:
     conversation_started, snapshot, transcript, bot_message, claim_updated, audio,
     audio_continued, error
 
-The speech of a turn's reply comes in chunks, one per sentence, each sent as soon as it is
-synthesized: `audio` carries the first one and starts a new reply, `audio_continued` the rest,
-to be played in order after it.
+The speech of a reply is sent in pieces as it arrives from the provider (sentences are
+synthesized at once, but sent in order): `audio` carries the first piece and starts a new
+reply, `audio_continued` the rest, to be played right after it. `data` is base64 raw PCM,
+16-bit little-endian mono, at the rate in `mime` ("audio/pcm;rate=24000").
 
 Connecting to /ws/conversations/ starts a conversation (conversation_started carries its
 access token). Connecting to /ws/conversations/<id>/ resumes watching one: the first message
@@ -225,21 +226,16 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         await self.send_json(claim_updated_event(result.conversation))
         if not reply_audio:
             return
-        if greeting:
-            # Nobody is waiting on an answer yet: the greeting is synthesized whole.
-            wav = await self._services.voice.speak(result.replies)
-            if wav is not None:
-                await self._send_audio("audio", wav)
-            return
+        voice = self._services.voice
+        # Nobody is waiting on an answer yet: the greeting is synthesized in one go.
+        speech = voice.speak(result.replies) if greeting else voice.speak_in_chunks(result.replies)
+        mime = f"audio/pcm;rate={voice.sample_rate}"
         kind = "audio"
-        async with aclosing(self._services.voice.speak_in_chunks(result.replies)) as chunks:
-            async for wav in chunks:
-                await self._send_audio(kind, wav)
+        async with aclosing(speech) as pieces:
+            async for pcm in pieces:
+                data = base64.b64encode(pcm).decode("ascii")
+                await self.send_json({"type": kind, "mime": mime, "data": data})
                 kind = "audio_continued"
-
-    async def _send_audio(self, kind: str, wav: bytes) -> None:
-        data = base64.b64encode(wav).decode("ascii")
-        await self.send_json({"type": kind, "mime": "audio/wav", "data": data})
 
     async def _decode_audio(self, data: str) -> bytes | None:
         """The audio file's bytes, or None after telling the client what was wrong."""

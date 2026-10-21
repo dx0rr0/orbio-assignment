@@ -37,8 +37,8 @@ describe('parseServerEvent', () => {
     })
   })
 
-  it.each(['audio', 'audio_continued'])('reads %s chunks of a reply', (type) => {
-    const audio = { type, mime: 'audio/wav', data: 'UklGRg==' }
+  it.each(['audio', 'audio_continued'])('reads %s pieces of a reply', (type) => {
+    const audio = { type, mime: 'audio/pcm;rate=24000', data: 'AAD/fw==' }
     expect(parseServerEvent(JSON.stringify(audio))).toEqual(audio)
   })
 
@@ -54,7 +54,7 @@ describe('parseServerEvent', () => {
       'an unknown field state',
       JSON.stringify({ type: 'claim_updated', claim: { ...claim, fields: badFields }, summary: null }),
     ],
-    ['audio that is not base64', '{"type": "audio", "mime": "audio/wav", "data": "not base64!"}'],
+    ['audio that is not base64', '{"type": "audio", "mime": "audio/pcm;rate=24000", "data": "not base64!"}'],
   ])('rejects %s', (_, data) => {
     expect(parseServerEvent(data)).toBeNull()
   })

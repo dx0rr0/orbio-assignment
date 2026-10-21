@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react'
 
+import { decodeSpeech, type SpeechPiece } from '../audio/pcm'
 import { toBase64 } from '../audio/wav'
 import { resumeMessage, saveToken, socketUrl } from './access'
 import { type ClientMessage, parseServerEvent } from './protocol'
@@ -8,7 +9,7 @@ import { initialState, reducer } from './state'
 const session = () => window.sessionStorage
 
 /** One conversation over WebSocket. `resumeId` watches an existing one instead of starting. */
-export function useConversation(resumeId: string | null, playAudio: (wav: Blob, startsReply: boolean) => void) {
+export function useConversation(resumeId: string | null, playAudio: (piece: SpeechPiece, startsReply: boolean) => void) {
   const [state, dispatch] = useReducer(reducer, initialState)
   const socket = useRef<WebSocket | null>(null)
   // Kept in a ref so that a new callback doesn't reconnect the socket.
@@ -37,8 +38,9 @@ export function useConversation(resumeId: string | null, playAudio: (wav: Blob, 
         saveToken(session, event.conversation_id, event.token)
       }
       if (event.type === 'audio' || event.type === 'audio_continued') {
-        const bytes = Uint8Array.from(atob(event.data), (c) => c.charCodeAt(0))
-        play.current(new Blob([bytes], { type: event.mime }), event.type === 'audio')
+        const piece = decodeSpeech(event.mime, event.data)
+        if (piece === null) console.warn('Ignoring speech of an unknown type', event.mime)
+        else play.current(piece, event.type === 'audio')
       }
       dispatch({ type: 'server', event })
     }

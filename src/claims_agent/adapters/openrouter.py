@@ -1,8 +1,7 @@
 """OpenRouter adapters for the chat, speech-to-text and text-to-speech ports."""
 
-import io
-import wave
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any, Self
 
 import httpx
@@ -179,15 +178,21 @@ class _OpenRouterAudio:
         await self.aclose()
 
     async def _post(self, path: str, **kwargs: Any) -> httpx.Response:
-        try:
+        with _speech_errors(path):
             response = await self._client.post(path, headers=self._headers, **kwargs)
             response.raise_for_status()
-        except httpx.HTTPStatusError as error:
-            # The body says why (OpenRouter's 402s name the limit that was hit).
-            raise SpeechError(f"{path}: {error}: {error.response.text[:300]}") from error
-        except httpx.HTTPError as error:
-            raise SpeechError(f"{path}: {error}") from error
         return response
+
+
+@contextmanager
+def _speech_errors(path: str) -> Iterator[None]:
+    try:
+        yield
+    except httpx.HTTPStatusError as error:
+        # The body says why (OpenRouter's 402s name the limit that was hit).
+        raise SpeechError(f"{path}: {error}: {error.response.text[:300]}") from error
+    except httpx.HTTPError as error:
+        raise SpeechError(f"{path}: {error}") from error
 
 
 class OpenRouterSpeechToText(_OpenRouterAudio):
@@ -210,26 +215,23 @@ class OpenRouterSpeechToText(_OpenRouterAudio):
 
 
 class OpenRouterTextToSpeech(_OpenRouterAudio):
-    async def synthesize(self, text: str) -> bytes:
-        response = await self._post(
-            "/audio/speech",
-            json={
-                "model": TTS_MODEL,
-                "input": text,
-                "voice": TTS_VOICE,
-                "response_format": "pcm",
-            },
-        )
-        if not response.content:
+    sample_rate = TTS_SAMPLE_RATE
+
+    async def stream(self, text: str) -> AsyncIterator[bytes]:
+        """MAI sends the audio progressively: for a 100-character sentence the first bytes
+        arrive about 0.6 s after the request, the last about 0.8 s."""
+        body = {"model": TTS_MODEL, "input": text, "voice": TTS_VOICE, "response_format": "pcm"}
+        path = "/audio/speech"
+        received = False
+        with _speech_errors(path):
+            async with self._client.stream(
+                "POST", path, headers=self._headers, json=body
+            ) as response:
+                if response.is_error:
+                    await response.aread()  # for the reason in its body
+                    response.raise_for_status()
+                async for piece in response.aiter_bytes():
+                    received = True
+                    yield piece
+        if not received:
             raise SpeechError("empty speech response")
-        return pcm_to_wav(response.content, TTS_SAMPLE_RATE)
-
-
-def pcm_to_wav(pcm: bytes, sample_rate: int) -> bytes:
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(sample_rate)
-        wav.writeframes(pcm)
-    return buffer.getvalue()

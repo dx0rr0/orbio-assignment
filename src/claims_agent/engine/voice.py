@@ -4,7 +4,8 @@ transcription counts as an unintelligible utterance, a failed synthesis as a tex
 import asyncio
 import logging
 import re
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from contextlib import aclosing
 
 from claims_agent.engine.templates import BotMessage
 from claims_agent.ports import NullTelemetry, SpeechError, SpeechToText, Telemetry, TextToSpeech
@@ -16,6 +17,11 @@ _CHUNK_BREAK = re.compile(r"(?<=[.:!?…])\s+")
 # Shorter pieces ("Conductor:", "Gracias.") join the next one rather than being synthesized
 # alone, which would sound clipped.
 MIN_CHUNK_CHARS = 20
+# Speech is sent on in pieces of at least this much audio rather than in every network read
+# (a few kB): fewer messages, and the browser still starts playing almost as soon.
+MIN_PIECE_SECONDS = 0.15
+# Of 16-bit PCM.
+SAMPLE_BYTES = 2
 
 
 def speech_chunks(text: str) -> list[str]:
@@ -55,35 +61,80 @@ class Voice:
             span.update(output=text)
             return text
 
-    async def speak(self, replies: Sequence[BotMessage]) -> bytes | None:
-        """One WAV with all the replies of a turn, or None if synthesis failed."""
+    @property
+    def sample_rate(self) -> int:
+        """Of the speech `speak` and `speak_in_chunks` yield: 16-bit mono PCM."""
+        return self._tts.sample_rate
+
+    async def speak(self, replies: Sequence[BotMessage]) -> AsyncGenerator[bytes]:
+        """All the replies of a turn spoken in one synthesis, yielded in pieces as it arrives.
+        A failed synthesis ends the audio there."""
         text = " ".join(reply.spoken for reply in replies)
-        return await self._synthesize(text) if text else None
+        async with aclosing(self._speak_in_order([text] if text else [])) as pieces:
+            async for piece in pieces:
+                yield piece
 
     async def speak_in_chunks(self, replies: Sequence[BotMessage]) -> AsyncGenerator[bytes]:
-        """The replies of a turn as WAV chunks, one per sentence, in order. Every chunk is
-        synthesized at once and each is yielded as soon as it and those before it are ready, so
-        the first sentence can play while the rest is synthesized. A failed synthesis ends the
-        audio there (the text of the replies is sent anyway)."""
+        """The replies of a turn spoken by sentence, yielded in pieces in order. Every sentence
+        is synthesized at once, and the pieces of each are yielded as they arrive once those of
+        the sentences before it are out, so the first sentence plays while the rest is still
+        being synthesized. A failed synthesis ends the audio there (the text of the replies is
+        sent anyway)."""
         texts = speech_chunks(" ".join(reply.spoken for reply in replies))
-        synthesis = [asyncio.create_task(self._synthesize(text)) for text in texts]
+        async with aclosing(self._speak_in_order(texts)) as pieces:
+            async for piece in pieces:
+                yield piece
+
+    async def _speak_in_order(self, texts: Sequence[str]) -> AsyncGenerator[bytes]:
+        # Each synthesis fills its queue and ends it with None; a later sentence waits there
+        # until those before it are out.
+        queues = [asyncio.Queue[bytes | None]() for _ in texts]
+        synthesis = [
+            asyncio.create_task(self._synthesize(text, queue))
+            for text, queue in zip(texts, queues, strict=True)
+        ]
         try:
-            for task in synthesis:
-                wav = await task
-                if wav is None:
+            for task, queue in zip(synthesis, queues, strict=True):
+                while (piece := await queue.get()) is not None:
+                    yield piece
+                if not await task:
                     return
-                yield wav
         finally:
             for task in synthesis:
                 task.cancel()
 
-    async def _synthesize(self, text: str) -> bytes | None:
+    async def _synthesize(self, text: str, pieces: asyncio.Queue[bytes | None]) -> bool:
+        """Puts the speech of `text` in `pieces`, then None; False if the synthesis failed."""
         with self._telemetry.span("tts", input=text) as span:
+            sent = 0
             try:
-                wav = await self._tts.synthesize(text)
+                async for piece in whole_samples(self._tts.stream(text), self.min_piece_bytes):
+                    pieces.put_nowait(piece)
+                    sent += len(piece)
             except SpeechError as error:
                 logger.exception("Speech synthesis failed; replying in text only")
                 span.update(metadata={"error": str(error)})
-                return None
-            span.update(output={"wav_bytes": len(wav)})
-            return wav
+                return False
+            finally:
+                pieces.put_nowait(None)
+            span.update(output={"pcm_bytes": sent})
+            return True
+
+    @property
+    def min_piece_bytes(self) -> int:
+        return round(self.sample_rate * MIN_PIECE_SECONDS) * SAMPLE_BYTES
+
+
+async def whole_samples(chunks: AsyncIterator[bytes], min_bytes: int) -> AsyncGenerator[bytes]:
+    """`chunks` regrouped into pieces of whole samples, each at least `min_bytes` long but for
+    the last. A half sample at the very end is dropped."""
+    buffer = bytearray()
+    async for chunk in chunks:
+        buffer += chunk
+        if len(buffer) >= min_bytes:
+            size = len(buffer) - len(buffer) % SAMPLE_BYTES
+            yield bytes(buffer[:size])
+            del buffer[:size]
+    size = len(buffer) - len(buffer) % SAMPLE_BYTES
+    if size:
+        yield bytes(buffer[:size])

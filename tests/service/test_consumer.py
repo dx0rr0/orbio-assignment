@@ -18,6 +18,7 @@ from claims_service.intake.consumers import NOT_FOUND_CLOSE_CODE, ConversationCo
 from claims_service.intake.groups import group_name
 from claims_service.intake.routing import websocket_application
 from tests.engine.fakes import COMPLETE, call, say
+from tests.service.conftest import FAKE_PCM
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -66,7 +67,8 @@ async def test_connecting_starts_a_conversation_with_a_spoken_greeting(applicati
         "value": None,
         "error": None,
     }
-    assert base64.b64decode(events[3]["data"]) == b"RIFF-fake-wav"
+    assert events[3]["mime"] == "audio/pcm;rate=24000"
+    assert base64.b64decode(events[3]["data"]) == FAKE_PCM
     assert tts.spoken == [templates.greeting().text]
     await communicator.disconnect()
 
@@ -120,6 +122,24 @@ async def test_a_reply_is_spoken_by_sentence_as_each_one_is_ready(application, l
         "audio_continued",
     ]
     assert tts.spoken[-2:] == ["Gracias por la información.", "¿Me indica su número de póliza?"]
+    assert await communicator.receive_nothing()
+    await communicator.disconnect()
+
+
+async def test_speech_is_sent_in_pieces_as_it_arrives(application, llm, services, tts):
+    communicator, _ = await started_conversation(application)
+    piece = b"\x01\x00" * (services.voice.min_piece_bytes // 2)
+    tts.pieces = [piece, piece, b"\x02\x00"]
+    llm.then(say("¿Me indica su número de póliza?"))
+
+    await communicator.send_json_to({"type": "text", "text": "Hola", "reply_audio": True})
+    events = await receive_until(communicator, "claim_updated")
+    audio = [await communicator.receive_json_from(timeout=5) for _ in range(3)]
+
+    assert [e["type"] for e in audio] == ["audio", "audio_continued", "audio_continued"]
+    assert {e["mime"] for e in audio} == {"audio/pcm;rate=24000"}
+    assert [base64.b64decode(e["data"]) for e in audio] == [piece, piece, b"\x02\x00"]
+    assert events[0]["text"] == "¿Me indica su número de póliza?"
     assert await communicator.receive_nothing()
     await communicator.disconnect()
 

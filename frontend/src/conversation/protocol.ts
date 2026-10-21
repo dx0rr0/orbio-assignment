@@ -57,9 +57,10 @@ const ServerEvent = z.discriminatedUnion('type', [
   z.object({ type: z.literal('transcript'), text: z.string() }),
   z.object({ type: z.literal('bot_message'), text: z.string(), alert: z.boolean() }),
   z.object({ type: z.literal('claim_updated'), claim: ClaimView, summary: Summary.nullable() }),
-  // The first chunk of a reply's speech; it replaces whatever is still playing.
+  // The first piece of a reply's speech; it replaces whatever is still playing. `data` is raw
+  // PCM of type `mime` ("audio/pcm;rate=24000", see decodeSpeech).
   z.object({ type: z.literal('audio'), mime: z.string(), data: z.base64() }),
-  // The next chunk of the same reply, played after the ones before it.
+  // The next piece of the same reply, played right after the ones before it.
   z.object({ type: z.literal('audio_continued'), mime: z.string(), data: z.base64() }),
   z.object({ type: z.literal('error'), message: z.string() }),
 ])
