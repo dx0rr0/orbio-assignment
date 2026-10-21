@@ -29,6 +29,7 @@ from claims_agent.domain import (
     close,
     confirm,
     format_reference,
+    identified_policy,
     policy_number_to_look_up,
 )
 from claims_agent.engine import templates, tools
@@ -195,10 +196,10 @@ class ConversationEngine:
         return templates.closed(claim, await self._policy_of(claim))
 
     async def _policy_of(self, claim: Claim) -> Policy | None:
-        """The claim's policy; a stored policy number has always been validated."""
-        if claim.policy_number is None:
+        """The claim's policy, once the declarant is identified by its number and plate."""
+        if claim.policy_number is None or claim.plate is None:
             return None
-        return await self._repository.get_policy(claim.policy_number)
+        return identified_policy(claim, await self._repository.get_policy(claim.policy_number))
 
     # --- LLM loop -------------------------------------------------------------------------
 

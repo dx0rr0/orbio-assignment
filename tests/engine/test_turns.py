@@ -53,6 +53,18 @@ async def test_system_prompt_carries_the_claim_state_and_current_date(engine, ll
     assert '"policyholder_name": "María López Fernández"' in second["system"]
 
 
+async def test_policyholder_name_is_not_shared_with_a_plate_that_does_not_match(
+    engine, llm, conversation_id
+):
+    wrong_plate = {"policy_number": "AUT-48213907", "plate": "9999 ZZZ"}
+    llm.then(call(UPDATE_CLAIM, wrong_plate), say("La matrícula no coincide. ¿Me la repite?"))
+
+    await engine.handle_text(conversation_id, "AUT 48213907, matrícula 9999 ZZZ")
+
+    assert '"policyholder_name": null' in llm.requests[1]["system"]
+    assert "María López Fernández" not in llm.requests[1]["system"]
+
+
 # --- tools --------------------------------------------------------------------------------
 
 
@@ -217,6 +229,7 @@ async def test_loss_outside_the_coverage_period_is_closed_with_a_template(
             UPDATE_CLAIM,
             {
                 "policy_number": NEW_POLICY.number,
+                "plate": NEW_POLICY.plate,
                 "loss_window": {"start": "2026-10-13T22:00", "end": "2026-10-14T08:00"},
             },
         )

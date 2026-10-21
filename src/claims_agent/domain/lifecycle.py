@@ -170,8 +170,20 @@ def apply_update(
     )
 
     return UpdateResult(
-        claim=_next_status(updated, known_policy), accepted=accepted, rejected=errors
+        claim=_next_status(updated, identified_policy(updated, known_policy)),
+        accepted=accepted,
+        rejected=errors,
     )
+
+
+def identified_policy(claim: Claim, policy: Policy | None) -> Policy | None:
+    """`policy` if the claim's policy number and plate both match it, else None. Until then the
+    declarant is not identified, and nothing from the policy may be used or disclosed."""
+    if policy is None or claim.plate is None:
+        return None
+    if (claim.policy_number, claim.plate) != (policy.number, policy.plate):
+        return None
+    return policy
 
 
 def _next_status(claim: Claim, policy: Policy | None) -> Claim:

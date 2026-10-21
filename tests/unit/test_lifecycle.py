@@ -29,9 +29,8 @@ POLICY = Policy(
 )
 OTHER_POLICY = POLICY.model_copy(update={"number": "AUT-00000002", "plate": "5678FGH"})
 
-COMPLETE = {
-    "policy_number": "AUT-00000001",
-    "plate": "1234 BCD",
+IDENTIFIED = {"policy_number": "AUT-00000001", "plate": "1234 BCD"}
+COMPLETE = IDENTIFIED | {
     "declarant_name": "Ana García",
     "driver_is_policyholder": True,
     "loss_type": "broken_glass",
@@ -168,7 +167,7 @@ def test_loss_abroad_is_not_covered():
 
 
 def test_loss_outside_the_coverage_period_is_not_covered():
-    claim = update(policy_number="AUT-00000001", loss_window={"start": "2025-06-01T10:00"}).claim
+    claim = update(**IDENTIFIED, loss_window={"start": "2025-06-01T10:00"}).claim
     assert claim.status is ClaimStatus.NOT_COVERED
     assert claim.closure_reason is ClosureReason.OUTSIDE_COVERAGE_PERIOD
 
@@ -176,13 +175,24 @@ def test_loss_outside_the_coverage_period_is_not_covered():
 def test_coverage_is_checked_when_the_policy_arrives_after_the_window():
     claim = update(policy=None, loss_window={"start": "2025-06-01T10:00"}).claim
     assert claim.status is ClaimStatus.IN_PROGRESS
-    claim = update(claim, policy_number="AUT-00000001").claim
+    claim = update(claim, **IDENTIFIED).claim
+    assert claim.status is ClaimStatus.NOT_COVERED
+
+
+def test_coverage_is_not_checked_until_the_plate_matches_the_policy():
+    # The coverage period is policy data: it says nothing until the declarant is identified.
+    window = {"start": "2025-06-01T10:00"}
+    claim = update(policy_number="AUT-00000001", plate="9999 ZZZ", loss_window=window).claim
+    assert claim.status is ClaimStatus.IN_PROGRESS
+    claim = update(policy_number="AUT-00000001", loss_window=window).claim
+    assert claim.status is ClaimStatus.IN_PROGRESS
+    claim = update(claim, plate="1234 BCD").claim
     assert claim.status is ClaimStatus.NOT_COVERED
 
 
 def test_window_partly_outside_the_coverage_period_is_escalated():
     claim = update(
-        policy_number="AUT-00000001",
+        **IDENTIFIED,
         loss_type="theft",
         loss_window={"start": "2025-12-31T20:00", "end": "2026-01-01T09:00"},
     ).claim
