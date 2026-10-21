@@ -15,7 +15,7 @@ The data about a loss that the agent collects from the declarant during a conver
 _Avoid_: Report, ticket, case, FNOL (except when describing the industry practice)
 
 **Loss window** (*Momento del siniestro*):
-The interval in which the loss happened, from `from` to `to`. It collapses to an instant when the declarant knows when it happened. For a theft or parked-car damage it runs from when the vehicle was last seen to when the damage was discovered.
+The interval in which the loss happened, from its start to its end. It collapses to an instant when the declarant knows when it happened. For a theft or parked-car damage it runs from when the vehicle was last seen to when the damage was discovered.
 _Avoid_: Date, time, timestamp
 
 **Loss location** (*Lugar del siniestro*):
