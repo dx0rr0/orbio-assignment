@@ -149,6 +149,7 @@ async def test_failed_synthesis_still_sends_the_text(llm, tts):
         ([1, 2], "No se ha podido leer el mensaje"),
         ({"type": "video"}, "No se ha podido leer el mensaje"),
         ({"type": "text"}, "No se ha podido leer el mensaje"),
+        ({"type": "text", "text": "a" * (consumers.MAX_TEXT_CHARS + 1)}, "demasiado largo"),
         ({"type": "audio", "data": "not base64!"}, "No se ha podido leer el audio"),
         (
             {"type": "audio", "data": "A" * (consumers.MAX_AUDIO_BASE64_CHARS + 1)},

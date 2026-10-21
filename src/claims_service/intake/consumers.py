@@ -34,6 +34,8 @@ from claims_service.intake.tasks import generate_claim_summary
 
 # About a minute of 16 kHz mono 16-bit audio, base64-encoded.
 MAX_AUDIO_BASE64_CHARS = 3_000_000
+# Far more than anyone says in one turn; it bounds what a client can make the LLM read.
+MAX_TEXT_CHARS = 2_000
 NOT_FOUND_CLOSE_CODE = 4404
 INTERNAL_ERROR_CLOSE_CODE = 1011
 # Give up queueing the summary after about a second instead of kombu's default retries.
@@ -93,6 +95,9 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             return
         match content.get("type"):
             case "text" if isinstance(content.get("text"), str):
+                if len(content["text"]) > MAX_TEXT_CHARS:
+                    await self._error(error_messages.TEXT_TOO_LONG)
+                    return
                 with self._trace("turn", input={"text": content["text"]}) as trace:
                     reply_audio = bool(content.get("reply_audio", False))
                     await self._turn(content["text"], reply_audio=reply_audio, trace=trace)

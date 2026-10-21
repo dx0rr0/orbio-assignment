@@ -35,6 +35,7 @@ UNTRANSLATED = "No se ha podido registrar; el asistente lo volverá a preguntar"
 UNREADABLE_MESSAGE = "No se ha podido leer el mensaje. Inténtelo de nuevo."
 UNREADABLE_AUDIO = "No se ha podido leer el audio. Inténtelo de nuevo."
 AUDIO_TOO_LONG = "El audio es demasiado largo: hable menos de un minuto seguido."
+TEXT_TOO_LONG = "El mensaje es demasiado largo: escríbalo en varios más cortos."
 
 
 def display_error(error: str) -> str:
