@@ -3,7 +3,7 @@
 import io
 import wave
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import openai
@@ -19,6 +19,8 @@ TTS_VOICE = "Kore"
 # Gemini TTS only returns raw PCM: 16-bit mono at this rate.
 TTS_SAMPLE_RATE = 24_000
 TIMEOUT_SECONDS = 30.0
+# Per chat request; the engine also bounds the whole turn (TURN_DEADLINE_SECONDS).
+CHAT_TIMEOUT_SECONDS = 10.0
 
 
 def _to_openai(message: Message) -> dict[str, Any]:
@@ -58,7 +60,7 @@ class OpenRouterChatModel:
         cls, api_key: str, *, client_class: type[openai.AsyncOpenAI] = openai.AsyncOpenAI
     ) -> "OpenRouterChatModel":
         client = client_class(
-            api_key=api_key, base_url=BASE_URL, timeout=TIMEOUT_SECONDS, max_retries=0
+            api_key=api_key, base_url=BASE_URL, timeout=CHAT_TIMEOUT_SECONDS, max_retries=0
         )
         return cls(client)
 
@@ -72,8 +74,11 @@ class OpenRouterChatModel:
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,
-                messages=[{"role": "system", "content": system}, *map(_to_openai, messages)],
-                tools=list(tools),
+                # Built as plain dicts; the SDK's TypedDicts add nothing but casts here.
+                messages=cast(
+                    Any, [{"role": "system", "content": system}, *map(_to_openai, messages)]
+                ),
+                tools=cast(Any, list(tools)),
                 temperature=0.3,
             )
         except openai.OpenAIError as error:

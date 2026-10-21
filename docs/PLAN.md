@@ -18,7 +18,7 @@ Agreed scope for v0 of the auto claim intake voice agent. Vocabulary follows [GL
     - `theft`: `police_report_filed` (bool).
   - **Urgency** (`high | medium | low`): derived by deterministic code from `injuries` and `vehicle_immobilized`, never asked.
 - **Claim status**: `in_progress → pending_confirmation → confirmed`. A correction during confirmation keeps the claim `pending_confirmation` (and the bot reads it back again) if it is still complete, or returns it to `in_progress` if the correction opens a new required field. Other final statuses: `incomplete`, `not_covered` and `escalated`, each storing a `closure_reason` (`data_refused | abandoned | retries_exhausted | system_error | outside_coverage_period | partial_coverage | outside_spain`) plus `pending_fields` (each with its last validation error). Partially collected data is kept.
-- **Coverage**: loss window entirely within the coverage period → continue; entirely outside → `not_covered`; partly outside → `escalated`.
+- **Coverage**: loss window entirely within the coverage period → continue; entirely outside → `not_covered`; partly outside → `escalated`. Same for a location outside Spain (`not_covered`). Since the value may be misheard or a date wrongly resolved, the claim does not close right away: it stays `in_progress`, a template states the value (and the coverage period) and asks the declarant to confirm it; the claim closes only once they confirm it, and a correction re-evaluates it.
 - **Closing**: the bot reads the claim back and the declarant confirms. The claim gets reference `SIN-<year>-<6-digit sequence>`, read aloud, and a Celery task generates the structured summary (key points, urgency, next steps).
 - **Errors and edge cases**
 
@@ -26,7 +26,7 @@ Agreed scope for v0 of the auto claim intake voice agent. Vocabulary follows [GL
   |---|---|
   | Empty or unintelligible transcription | Ask to repeat without calling the LLM, with a retry limit |
   | Invalid field (unknown policy, future date, plate mismatch) | Validator returns a specific error; the LLM explains it and asks again. 3 failures on the same field → `escalated` |
-  | Loss outside the coverage period | Explain and close as `not_covered` |
+  | Loss outside the coverage period | State the date and the coverage period, ask to confirm; close as `not_covered` once confirmed, continue if corrected |
   | Injuries | Recommend calling 112, then continue |
   | Off-topic | Short answer, back to the interview |
   | Declarant refuses a required field | Explain why it's needed; if they insist, close as `incomplete` |
@@ -63,7 +63,7 @@ Agreed scope for v0 of the auto claim intake voice agent. Vocabulary follows [GL
 - **Stack**
   - Django with async views, django-ninja for HTTP and Channels for WebSocket ([ADR-0004](adr/0004-django-channels-websocket-for-turns.md)).
   - Postgres with `JSONField` ([ADR-0003](adr/0003-postgres-with-django-jsonfield.md)).
-  - Redis (Channels layer and Celery broker) and Celery: `generate_claim_summary` after confirmation; `sweep_abandoned_conversations` with beat every minute (10 min of inactivity → `incomplete` / `abandoned`), written as one atomic conditional `UPDATE`.
+  - Redis (Channels layer and Celery broker) and Celery: `generate_claim_summary` after confirmation; `queue_missing_summaries` every 5 minutes re-queues it for confirmed claims that have none; `sweep_abandoned_conversations` with beat every minute (10 min of inactivity → `incomplete` / `abandoned`). The sweep selects the idle conversations and closes each with the domain's `close` (which records the pending fields) and the same versioned conditional `UPDATE` as a turn, so a turn that saved since the select wins; a turn marks the conversation active before calling the LLM, so a conversation receiving a turn is never swept.
   - Everything runs with `docker compose`.
 - **WebSocket protocol**: the client sends `audio` (WAV 16 kHz mono, encoded in the browser) or `text` (dev mode only in the UI; used by the evals). The server emits `transcript`, `bot_message`, `claim_updated` and `audio`.
 - **Models** (all through OpenRouter, each behind a port):

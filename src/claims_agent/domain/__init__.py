@@ -18,6 +18,8 @@ from claims_agent.domain.lifecycle import (
     apply_update,
     close,
     confirm,
+    confirm_value,
+    identified_policy,
     policy_number_to_look_up,
 )
 from claims_agent.domain.location import LossLocation
@@ -50,7 +52,9 @@ __all__ = [
     "apply_update",
     "close",
     "confirm",
+    "confirm_value",
     "coverage",
     "format_reference",
+    "identified_policy",
     "policy_number_to_look_up",
 ]

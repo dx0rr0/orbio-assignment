@@ -4,13 +4,14 @@ This is the only place a claim changes: the LLM proposes values, these functions
 is valid, when the claim is complete, and when it closes (ADR-0002).
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from claims_agent.domain.claim import (
     CLAIM_FIELDS,
+    COVERAGE_ISSUES,
     Claim,
     ClaimStatus,
     ClosureReason,
@@ -53,10 +54,9 @@ def _text(min_length: int) -> Callable[[object], str]:
 
 
 def _loss_type(raw: object) -> LossType:
-    try:
+    if isinstance(raw, str) and raw in LossType:
         return LossType(raw)
-    except ValueError:
-        raise FieldError(f"must be one of: {', '.join(LossType)}") from None
+    raise FieldError(f"must be one of: {', '.join(LossType)}")
 
 
 _PARSERS: dict[str, Callable[[object], Any]] = {
@@ -109,12 +109,19 @@ def _inapplicable_fields(claim: Claim) -> set[str]:
 
 
 def apply_update(
-    claim: Claim, proposed: Mapping[str, Any], *, policy: Policy | None, now: datetime
+    claim: Claim,
+    proposed: Mapping[str, Any],
+    *,
+    policy: Policy | None,
+    now: datetime,
+    already_failed: Collection[str] = (),
 ) -> UpdateResult:
     """Validate `proposed` field values and apply the valid ones.
 
     `policy` must be the policy for `policy_number_to_look_up(claim, proposed)`, or None if
-    there is no such policy. `now` must be timezone-aware.
+    there is no such policy. `now` must be timezone-aware. A failure of a field in
+    `already_failed` is recorded but not counted again: attempts are counted per declarant
+    answer, and the LLM may send one answer several times.
     """
     if claim.status.is_final:
         raise ClaimClosedError(f"claim is {claim.status}")
@@ -155,7 +162,8 @@ def apply_update(
     for name, message in errors.items():
         if name in CLAIM_FIELDS:
             field_errors[name] = message
-            failed_attempts[name] = failed_attempts.get(name, 0) + 1
+            if name not in already_failed:
+                failed_attempts[name] = failed_attempts.get(name, 0) + 1
 
     updated = claim.model_copy(
         update=values | {"field_errors": field_errors, "failed_attempts": failed_attempts}
@@ -170,25 +178,57 @@ def apply_update(
     )
 
     return UpdateResult(
-        claim=_next_status(updated, known_policy), accepted=accepted, rejected=errors
+        claim=_next_status(updated, identified_policy(updated, known_policy)),
+        accepted=accepted,
+        rejected=errors,
     )
+
+
+def identified_policy(claim: Claim, policy: Policy | None) -> Policy | None:
+    """`policy` if the claim's policy number and plate both match it, else None. Until then the
+    declarant is not identified, and nothing from the policy may be used or disclosed."""
+    if policy is None or claim.plate is None:
+        return None
+    if (claim.policy_number, claim.plate) != (policy.number, policy.plate):
+        return None
+    return policy
+
+
+def _coverage_issue(claim: Claim, policy: Policy | None) -> ClosureReason | None:
+    if claim.loss_location is not None and not claim.loss_location.in_spain:
+        return ClosureReason.OUTSIDE_SPAIN
+    if claim.loss_window is not None and policy is not None:
+        match coverage(claim.loss_window, policy):
+            case Coverage.NOT_COVERED:
+                return ClosureReason.OUTSIDE_COVERAGE_PERIOD
+            case Coverage.PARTIAL:
+                return ClosureReason.PARTIAL_COVERAGE
+    return None
 
 
 def _next_status(claim: Claim, policy: Policy | None) -> Claim:
     """A correction while pending confirmation keeps the claim pending if it is still complete
-    (the caller reads it back again) and returns it to in_progress otherwise."""
-    if claim.loss_location is not None and not claim.loss_location.in_spain:
-        return close(claim, ClaimStatus.NOT_COVERED, ClosureReason.OUTSIDE_SPAIN)
-    if claim.loss_window is not None and policy is not None:
-        match coverage(claim.loss_window, policy):
-            case Coverage.NOT_COVERED:
-                return close(claim, ClaimStatus.NOT_COVERED, ClosureReason.OUTSIDE_COVERAGE_PERIOD)
-            case Coverage.PARTIAL:
-                return close(claim, ClaimStatus.ESCALATED, ClosureReason.PARTIAL_COVERAGE)
+    (the caller reads it back again) and returns it to in_progress otherwise. A value that would
+    leave the loss uncovered keeps the claim in_progress until the declarant confirms it
+    (`confirm_value`) or corrects it."""
     if any(n >= MAX_FAILED_ATTEMPTS for n in claim.failed_attempts.values()):
         return close(claim, ClaimStatus.ESCALATED, ClosureReason.RETRIES_EXHAUSTED)
-    status = ClaimStatus.IN_PROGRESS if claim.missing_fields else ClaimStatus.PENDING_CONFIRMATION
-    return claim.model_copy(update={"status": status})
+    issue = _coverage_issue(claim, policy)
+    if issue is not None:
+        status = ClaimStatus.IN_PROGRESS
+    else:
+        status = (
+            ClaimStatus.IN_PROGRESS if claim.missing_fields else ClaimStatus.PENDING_CONFIRMATION
+        )
+    return claim.model_copy(update={"status": status, "coverage_issue": issue})
+
+
+def confirm_value(claim: Claim) -> Claim:
+    """The declarant confirmed the value that leaves the loss uncovered: the claim closes."""
+    if claim.status.is_final or claim.coverage_issue is None:
+        raise InvalidTransitionError("there is no value waiting for confirmation")
+    _, status = COVERAGE_ISSUES[claim.coverage_issue]
+    return close(claim, status, claim.coverage_issue)
 
 
 def close(claim: Claim, status: ClaimStatus, reason: ClosureReason) -> Claim:

@@ -63,7 +63,12 @@ class Conversation(BaseModel):
     llm_failure_streak: int = 0
     # How many times the declarant refused to give each field.
     refusals: dict[str, int] = {}
+    # `Claim.fingerprint_to_confirm` of what the declarant was last asked to confirm (the
+    # read-back, or a value that leaves the loss uncovered): only that can be confirmed.
+    read_back_fingerprint: str | None = None
     summary: ClaimSummary | None = None
+    # The summary task gave up after its retries: an adjuster has to write it.
+    summary_failed: bool = False
     created_at: AwareDatetime
     updated_at: AwareDatetime
     # Optimistic concurrency token, bumped by the repository on every save.

@@ -5,7 +5,6 @@ x-backend: &backend
     POSTGRES_HOST: db
     POSTGRES_PORT: "5432"
     REDIS_URL: redis://redis:6379/0
-    DJANGO_ALLOWED_HOSTS: "*"
   depends_on:
     db:
       condition: service_healthy
@@ -39,9 +38,9 @@ services:
     <<: *backend
     command: sh -c "django-admin migrate --noinput && django-admin seed_policies"
 
+  # Not published on the host: the browser reaches it through the frontend's proxy.
   backend:
     <<: *backend
-    ports: ["8000:8000"]
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -6,8 +6,9 @@ Client → server:
 Server → client:
     conversation_started, transcript, bot_message, claim_updated, audio, error
 
-Connecting to /ws/conversations/ starts a conversation; /ws/conversations/<id>/ resumes
-watching one (its snapshot is sent first). Channels hands this consumer one message at a time,
+Connecting to /ws/conversations/ starts a conversation (conversation_started carries its
+access token); /ws/conversations/<id>/?token=<token> resumes watching one (its snapshot is
+sent first). Channels hands this consumer one message at a time,
 so turns of one connection never overlap.
 """
 
@@ -16,13 +17,15 @@ import binascii
 import logging
 from contextlib import AbstractContextManager
 from typing import Any
+from urllib.parse import parse_qs
 from uuid import UUID
 
+from asgiref.sync import sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
-from claims_agent.engine import TurnResult
+from claims_agent.engine import TurnResult, templates
 from claims_agent.ports import ConcurrentUpdateError, ConversationNotFoundError, Span
-from claims_service.intake import services
+from claims_service.intake import access, error_messages, services
 from claims_service.intake.groups import group_name
 from claims_service.intake.presenters import (
     bot_message_event,
@@ -33,7 +36,12 @@ from claims_service.intake.tasks import generate_claim_summary
 
 # About a minute of 16 kHz mono 16-bit audio, base64-encoded.
 MAX_AUDIO_BASE64_CHARS = 3_000_000
+# Far more than anyone says in one turn; it bounds what a client can make the LLM read.
+MAX_TEXT_CHARS = 2_000
 NOT_FOUND_CLOSE_CODE = 4404
+INTERNAL_ERROR_CLOSE_CODE = 1011
+# Give up queueing the summary after about a second instead of kombu's default retries.
+SUMMARY_RETRY_POLICY = {"max_retries": 2, "interval_start": 0, "interval_step": 0.5}
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +51,35 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
 
     async def connect(self) -> None:
         await self.accept()
+        try:
+            await self._open()
+        except Exception:
+            # Nothing to resume without a conversation: apologise and hang up.
+            await self._technical_problem("Could not open the conversation")
+            await self.close(code=INTERNAL_ERROR_CLOSE_CODE)
+
+    async def _open(self) -> None:
         # The route's uuid converter already parsed it.
         conversation_id: UUID | None = self.scope["url_route"]["kwargs"].get("conversation_id")
         if conversation_id is None:
             result = await services.engine().start()
+            token = await access.issue_token(result.conversation.id)
             await self._join(result.conversation.id)
             await self.send_json(
-                {"type": "conversation_started", "conversation_id": str(self.conversation_id)}
+                {
+                    "type": "conversation_started",
+                    "conversation_id": str(self.conversation_id),
+                    "token": token,
+                }
             )
             with self._trace("greeting"):
                 await self._send_turn(result, reply_audio=True)
+            return
+        query = parse_qs(self.scope.get("query_string", b"").decode())
+        token = query.get("token", [None])[0]
+        # A wrong token gets the same answer as an unknown id.
+        if not await access.is_authorized(conversation_id, token):
+            await self.close(code=NOT_FOUND_CLOSE_CODE)
             return
         try:
             conversation = await services.repository().get(conversation_id)
@@ -68,11 +95,22 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             await self.channel_layer.group_discard(group, self.channel_name)
 
     async def receive_json(self, content: Any, **kwargs: Any) -> None:
+        try:
+            await self._receive(content)
+        except Exception:
+            # The trace records the exception as it leaves it; the conversation is as it was
+            # stored before this message, so the declarant can say it again.
+            await self._technical_problem("Could not handle the message")
+
+    async def _receive(self, content: Any) -> None:
         if not isinstance(content, dict):
-            await self._error("messages must be JSON objects")
+            await self._error(error_messages.UNREADABLE_MESSAGE)
             return
         match content.get("type"):
             case "text" if isinstance(content.get("text"), str):
+                if len(content["text"]) > MAX_TEXT_CHARS:
+                    await self._error(error_messages.TEXT_TOO_LONG)
+                    return
                 with self._trace("turn", input={"text": content["text"]}) as trace:
                     reply_audio = bool(content.get("reply_audio", False))
                     await self._turn(content["text"], reply_audio=reply_audio, trace=trace)
@@ -85,13 +123,14 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
                     await self.send_json({"type": "transcript", "text": utterance})
                     await self._turn(utterance, reply_audio=True, trace=trace)
             case _:
-                await self._error('expected {"type": "text", "text": ...} or audio')
+                await self._error(error_messages.UNREADABLE_MESSAGE)
 
     async def _turn(self, utterance: str, *, reply_audio: bool, trace: Span) -> None:
         try:
             result = await services.engine().handle_text(self.conversation_id, utterance)
         except ConcurrentUpdateError:
-            await self._error("the conversation changed meanwhile; please repeat")
+            # Another turn of the same conversation (e.g. a second tab) saved first.
+            await self.send_json(bot_message_event(templates.technical_problem()))
             return
         trace.update(
             output=[reply.text for reply in result.replies],
@@ -99,7 +138,7 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         )
         await self._send_turn(result, reply_audio=reply_audio)
         if result.confirmed_claim:
-            self._request_summary()
+            await self._request_summary()
 
     async def claim_updated(self, event: dict[str, Any]) -> None:
         """Pushed to the group by background tasks (summary, abandonment)."""
@@ -107,10 +146,14 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
 
     # --- helpers --------------------------------------------------------------------------
 
-    def _request_summary(self) -> None:
-        # The claim is already confirmed and announced; a broker outage must not end the call.
+    async def _request_summary(self) -> None:
+        # The claim is already confirmed and announced; a broker outage must not end the call,
+        # and `queue_missing_summaries` queues it later. Publishing is blocking I/O, so it runs
+        # off the event loop, and not in the thread the async ORM shares with other turns.
         try:
-            generate_claim_summary.delay(str(self.conversation_id))
+            await sync_to_async(generate_claim_summary.apply_async, thread_sensitive=False)(
+                args=[str(self.conversation_id)], retry_policy=SUMMARY_RETRY_POLICY
+            )
         except Exception:
             logger.exception(
                 "Could not queue the claim summary",
@@ -137,13 +180,21 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
     async def _decode_audio(self, data: str) -> bytes | None:
         """The WAV bytes, or None after telling the client what was wrong."""
         if len(data) > MAX_AUDIO_BASE64_CHARS:
-            await self._error("audio is too long; keep utterances under a minute")
+            await self._error(error_messages.AUDIO_TOO_LONG)
             return None
         try:
             return base64.b64decode(data, validate=True)
         except binascii.Error:
-            await self._error("audio data must be base64")
+            await self._error(error_messages.UNREADABLE_AUDIO)
             return None
+
+    async def _technical_problem(self, log_message: str) -> None:
+        """Log the exception being handled and apologise from the template."""
+        conversation_id = getattr(self, "conversation_id", None)
+        logger.exception(
+            log_message, extra={"conversation_id": conversation_id and str(conversation_id)}
+        )
+        await self.send_json(bot_message_event(templates.technical_problem()))
 
     async def _error(self, message: str) -> None:
         await self.send_json({"type": "error", "message": message})

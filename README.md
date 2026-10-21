@@ -4,16 +4,22 @@ A voice agent that takes the first notice of loss for a fictional car insurer (*
 
 The vocabulary (loss, claim, declarant, loss window…) is defined in [GLOSSARY.md](GLOSSARY.md), the agreed scope in [docs/PLAN.md](docs/PLAN.md) and the architectural decisions in [docs/adr](docs/adr).
 
+## Demo
+
+Video walkthrough: _link to be added_ (happy path, a correction during the read-back, and a loss outside the coverage period).
+
 ## Running it
 
 You need Docker and an [OpenRouter](https://openrouter.ai) API key. Langfuse is optional.
 
 ```bash
-cp .env.example .env      # then set OPENROUTER_API_KEY (and the LANGFUSE_* keys if you want traces)
+cp .env.example .env      # then set OPENROUTER_API_KEY, DJANGO_SECRET_KEY (and LANGFUSE_* for traces)
 docker compose up --build
 ```
 
-Open <http://localhost:8080>, allow the microphone and hold the button (or the space bar) to talk. The page looks like a call in progress: the whole conversation, with the agent's current words shown large, and on the right the claim as stages (identification, driver, what/when/where, damage, other vehicle or police report, confirmation) that fill in as you speak, with validation errors in Spanish. Add `?dev` to the URL to get a text box as well (handy without a microphone); `?conversation=<id>` reopens an existing conversation.
+Open <http://localhost:8080>, allow the microphone and hold the button (or the space bar) to talk. The page looks like a call in progress: the whole conversation, with the agent's current words shown large, and on the right the claim as stages (identification, driver, what/when/where, damage, other vehicle or police report, confirmation) that fill in as you speak, with validation errors in Spanish. Add `?dev` to the URL to get a text box as well (handy without a microphone); `?conversation=<id>` reopens a conversation started in the same browser tab.
+
+There are no accounts in v0. Each new conversation gets a random access token (only its hash is stored), which the page keeps in `sessionStorage`; resuming a conversation over WebSocket (`?token=`) or reading it through `GET /api/conversations/<id>` (`Authorization: Bearer <token>`) needs it, so a conversation can't be reopened from another browser. The list of all conversations, `GET /api/conversations`, is only served with `DJANGO_DEBUG=true`.
 
 Five demo policies are seeded, with dates relative to today, one per scenario:
 
@@ -25,7 +31,7 @@ Five demo policies are seeded, with dates relative to today, one per scenario:
 | AUT-73058416 | 6614 LPR | Carlos Moreno Díaz | Started three days ago (a week-old loss is not covered) |
 | AUT-84169527 | 3087 GBN | Elena Sánchez Ortiz | Declare it with another plate to see the mismatch |
 
-Services: `frontend` (nginx serving the React app and proxying `/api` and `/ws`), `backend` (Django on uvicorn), `worker` and `beat` (Celery), `db` (Postgres) and `redis`. The host ports are 8080, 8000, 55432 and 6380, chosen not to clash with local installs.
+Services: `frontend` (nginx serving the React app and proxying `/api` and `/ws`), `backend` (Django on uvicorn), `worker` and `beat` (Celery), `db` (Postgres) and `redis`. Only the frontend is meant for the browser; the backend is reached through its proxy. The host ports are 8080, 55432 and 6380, chosen not to clash with local installs.
 
 ## How it works
 
@@ -35,7 +41,7 @@ browser ──WAV 16 kHz──▶ WebSocket consumer ──▶ STT ──▶ eng
                                                         ├─ LLM: converses, proposes values via tools
                                                         ├─ domain: validates, decides status / urgency / coverage
                                                         └─ Postgres: conversation document (load → process → save)
-                                        Celery: claim summary after confirmation · abandonment sweep every minute
+                                        Celery: claim summary after confirmation (re-queued if lost) · abandonment sweep
 ```
 
 **Code owns the flow; the LLM converses** ([ADR-0002](docs/adr/0002-code-owns-the-flow-llm-converses.md)). On each turn the LLM talks freely and proposes field values through an `update_claim` tool. Python validates them (policy exists, plate matches it, loss not in the future, province is one of the 52, …) and keeps only valid values. It also decides when the claim is complete, its urgency (from injuries and an immobilized vehicle, never asked), whether the policy covers the loss window, and every status transition. The LLM gets each rejection back as a specific error and explains it to the declarant. Three failures on the same field escalate the claim to an adjuster.
@@ -44,7 +50,7 @@ browser ──WAV 16 kHz──▶ WebSocket consumer ──▶ STT ──▶ eng
 
 **Packages.** `domain/` is pure (claim model, validators, lifecycle, coverage, provinces) and imports nothing else. `engine/` (turn loop, prompts, tools, templates, voice, summary) depends only on `domain/` and `ports/` (async interfaces for the LLM, speech, storage and telemetry). `adapters/` implements the ports for OpenRouter, Langfuse and in-memory storage. The Django project `claims_service/` stays at the edge: ORM repository, ninja API, Channels consumer and Celery tasks.
 
-**Stateless servers.** A turn loads the conversation, processes it and saves it with an optimistic version check, so any process can serve any turn. The abandonment sweep uses the same conditional update, which means a turn that lands mid-sweep wins. Claim references come from an atomic Postgres upsert.
+**Stateless servers.** A turn loads the conversation, processes it and saves it with an optimistic version check, so any process can serve any turn. A turn marks the conversation as active (a versioned save) before it calls the LLM, so the abandonment sweep, which closes with the same conditional update, skips a conversation that is receiving a turn; if the sweep closed it first, the turn tells the declarant the conversation is closed. Claim references come from an atomic Postgres upsert.
 
 **Failure handling.** An empty or unintelligible transcription is answered without calling the LLM. LLM errors are retried with backoff; if they persist, the agent apologises and keeps the conversation, and three failed turns in a row escalate it. Invalid tool calls go back to the LLM as errors. A failed transcription counts as unintelligible, and a failed synthesis falls back to a text-only reply.
 
@@ -54,8 +60,11 @@ browser ──WAV 16 kHz──▶ WebSocket consumer ──▶ STT ──▶ eng
 uv sync
 docker compose up -d db                       # the service tests use Postgres
 uv run --env-file .env pytest                 # unit, engine and service tests
+uv run pytest tests/unit tests/engine         # no .env or database needed
+uv run mypy                                   # type checks (src, evals, scripts)
 uv run --env-file .env pytest -m e2e          # needs the whole stack up and real providers
 uv run --env-file .env python -m evals.run    # LLM-simulated declarants
+uv run --env-file .env python scripts/chat.py # talk to the engine in text, real LLM, no database
 cd frontend && npm ci && npm test && npm run lint
 ```
 
@@ -92,7 +101,7 @@ All three go through OpenRouter, each behind a port:
 - Real-time voice with streaming and barge-in. Turns are push-to-talk today, and a long read-back takes about 30 seconds of audio.
 - Replicas behind a load balancer; rate limits and quotas per provider; model fallback.
 - More languages; other insurance lines (home).
-- Real identity verification; resuming a conversation after it closes; geocoding the loss location.
+- Real identity verification and authentication (staff access to the conversation list, declarants resuming from another device); resuming a conversation after it closes; geocoding the loss location.
 - An offline hallucination judge over Langfuse traces; alerts on failures and on hallucination scores.
 - Multi-tenancy.
 - Bonus features such as RAG over policy conditions or sentiment analysis.

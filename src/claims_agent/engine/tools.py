@@ -7,6 +7,7 @@ from claims_agent.domain import CLAIM_FIELDS, LossType
 
 UPDATE_CLAIM = "update_claim"
 CONFIRM_CLAIM = "confirm_claim"
+CONFIRM_VALUE = "declarant_confirms_value"
 DECLARANT_REFUSES = "declarant_refuses_field"
 
 _BOOL = {"type": "boolean"}
@@ -111,6 +112,17 @@ TOOLS: tuple[dict[str, Any], ...] = (
             "description": (
                 "Call when, after the read-back of the complete claim, the declarant says that "
                 "everything is correct."
+            ),
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": CONFIRM_VALUE,
+            "description": (
+                "Call when the system asked the declarant to confirm a date or place that "
+                "leaves the loss uncovered, and the declarant says it is correct."
             ),
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },

@@ -5,13 +5,14 @@ from datetime import timedelta
 from uuid import UUID
 
 from asgiref.sync import async_to_sync
-from celery import shared_task
+from celery import Task, shared_task
 from channels.layers import get_channel_layer
 from django.utils import timezone
 
-from claims_agent.domain import ClaimStatus, ClosureReason, Conversation, close
+from claims_agent.domain import ClaimStatus, ClosureReason, Conversation, Role, close
+from claims_agent.engine.hallucinations import check_summary
 from claims_agent.engine.summary import SummaryError, summarize
-from claims_agent.ports import ConcurrentUpdateError
+from claims_agent.ports import ConcurrentUpdateError, Telemetry
 from claims_service.intake import services
 from claims_service.intake.groups import group_name
 from claims_service.intake.models import ConversationRecord
@@ -21,6 +22,10 @@ from claims_service.intake.repository import DjangoConversationRepository, to_co
 logger = logging.getLogger(__name__)
 
 ABANDONED_AFTER = timedelta(minutes=10)
+# A confirmed claim without a summary this long after confirmation lost its task (e.g. the
+# broker was down); after SUMMARY_GIVE_UP_AFTER it is left to a human.
+SUMMARY_GRACE = timedelta(minutes=5)
+SUMMARY_GIVE_UP_AFTER = timedelta(days=1)
 _ACTIVE = (ClaimStatus.IN_PROGRESS.value, ClaimStatus.PENDING_CONFIRMATION.value)
 
 
@@ -32,7 +37,32 @@ def _notify(conversation: Conversation) -> None:
     )
 
 
+class _SummaryTask(Task):
+    def on_failure(self, exc, task_id, args, kwargs, einfo) -> None:
+        """After the last retry: say so, and mark the conversation so that nobody waits for a
+        summary (nor `queue_missing_summaries` queues it again)."""
+        conversation_id = args[0]
+        logger.error(
+            "Claim summary failed after retries: %s",
+            exc,
+            extra={"conversation_id": conversation_id},
+        )
+        repository = DjangoConversationRepository()
+
+        async def mark_failed() -> None:
+            conversation = await repository.get(UUID(conversation_id))
+            await repository.save(conversation.model_copy(update={"summary_failed": True}))
+
+        try:
+            async_to_sync(mark_failed)()
+        except Exception:
+            logger.exception(
+                "Could not mark the summary as failed", extra={"conversation_id": conversation_id}
+            )
+
+
 @shared_task(
+    base=_SummaryTask,
     autoretry_for=(SummaryError, ConcurrentUpdateError),
     retry_backoff=5,
     max_retries=3,
@@ -48,6 +78,7 @@ def generate_claim_summary(conversation_id: str) -> None:
         if conversation.claim.status is not ClaimStatus.CONFIRMED or conversation.summary:
             return None
         summary = await summarize(llm, conversation)
+        _check_summary(summary.key_points, conversation, telemetry)
         return await repository.save(conversation.model_copy(update={"summary": summary}))
 
     try:
@@ -62,6 +93,25 @@ def generate_claim_summary(conversation_id: str) -> None:
         _notify(conversation)
 
 
+def _check_summary(
+    key_points: tuple[str, ...], conversation: Conversation, telemetry: Telemetry
+) -> None:
+    """Like the turns' replies, the LLM-written key points are checked, never blocked."""
+    declarant_said = " ".join(
+        m.content for m in conversation.messages if m.role is Role.USER and m.content
+    )
+    findings = check_summary(key_points, conversation.claim, declarant_said)
+    telemetry.score(
+        "summary_hallucination_check", 0.0 if findings else 1.0, "; ".join(findings) or None
+    )
+    if findings:
+        logger.warning(
+            "Possible hallucination in the claim summary: %s",
+            "; ".join(findings),
+            extra={"conversation_id": str(conversation.id)},
+        )
+
+
 @shared_task
 def sweep_abandoned_conversations() -> int:
     """Close as incomplete every active conversation idle for ABANDONED_AFTER."""
@@ -72,7 +122,8 @@ def sweep_abandoned_conversations() -> int:
         conversation = to_conversation(record)
         claim = close(conversation.claim, ClaimStatus.INCOMPLETE, ClosureReason.ABANDONED)
         try:
-            # A conditional UPDATE on the version: a turn that lands meanwhile wins.
+            # A conditional UPDATE on the version: a turn that saved since (it marks the
+            # conversation active before calling the LLM) wins.
             saved = async_to_sync(repository.save)(conversation.model_copy(update={"claim": claim}))
         except ConcurrentUpdateError:
             continue
@@ -80,3 +131,25 @@ def sweep_abandoned_conversations() -> int:
         logger.info("Conversation abandoned", extra={"conversation_id": str(conversation.id)})
         _notify(saved)
     return closed
+
+
+@shared_task
+def queue_missing_summaries() -> int:
+    """Queue the summary of confirmed claims that have none (an outbox sweep): the web process
+    queues it on confirmation, but does not hold the call up if the broker is down."""
+    now = timezone.now()
+    lost = ConversationRecord.objects.filter(
+        status=ClaimStatus.CONFIRMED.value,
+        document__summary=None,
+        document__summary_failed=False,
+        # A turn on a confirmed claim saves nothing, so this is when it was confirmed.
+        updated_at__lt=now - SUMMARY_GRACE,
+        updated_at__gte=now - SUMMARY_GIVE_UP_AFTER,
+    ).values_list("id", flat=True)
+    queued = 0
+    for conversation_id in lost:
+        generate_claim_summary.delay(str(conversation_id))
+        queued += 1
+    if queued:
+        logger.warning("Queued %d lost claim summaries", queued)
+    return queued

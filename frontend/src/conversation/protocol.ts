@@ -32,7 +32,7 @@ export interface TranscriptEntry {
 }
 
 export type ServerEvent =
-  | { type: 'conversation_started'; conversation_id: string }
+  | { type: 'conversation_started'; conversation_id: string; token: string }
   | {
       type: 'snapshot'
       conversation: {

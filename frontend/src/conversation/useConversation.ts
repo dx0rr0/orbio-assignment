@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react'
 
 import { toBase64 } from '../audio/wav'
+import { loadToken, saveToken, socketUrl } from './access'
 import type { ClientMessage, ServerEvent } from './protocol'
 import { initialState, reducer } from './state'
 
-function socketUrl(conversationId: string | null): string {
-  const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const path = conversationId ? `/ws/conversations/${conversationId}/` : '/ws/conversations/'
-  return `${scheme}://${window.location.host}${path}`
-}
+const session = () => window.sessionStorage
 
 /** One conversation over WebSocket. `resumeId` watches an existing one instead of starting. */
 export function useConversation(resumeId: string | null, playAudio: (wav: Blob) => void) {
@@ -21,12 +18,16 @@ export function useConversation(resumeId: string | null, playAudio: (wav: Blob) 
   }, [playAudio])
 
   useEffect(() => {
-    const ws = new WebSocket(socketUrl(resumeId))
+    const token = resumeId ? loadToken(session, resumeId) : null
+    const ws = new WebSocket(socketUrl(window.location, resumeId, token))
     socket.current = ws
     ws.onopen = () => dispatch({ type: 'connection', connection: 'open' })
     ws.onclose = () => dispatch({ type: 'connection', connection: 'closed' })
     ws.onmessage = (message: MessageEvent<string>) => {
       const event = JSON.parse(message.data) as ServerEvent
+      if (event.type === 'conversation_started') {
+        saveToken(session, event.conversation_id, event.token)
+      }
       if (event.type === 'audio') {
         const bytes = Uint8Array.from(atob(event.data), (c) => c.charCodeAt(0))
         play.current(new Blob([bytes], { type: event.mime }))

@@ -30,6 +30,13 @@ _TRANSLATIONS: tuple[tuple[re.Pattern[str], str], ...] = (
 
 UNTRANSLATED = "No se ha podido registrar; el asistente lo volverá a preguntar"
 
+# Errors in what the client sent, which the interface shows as they are. Messages that are not
+# the declarant's doing (malformed JSON from the client) still get a neutral Spanish wording.
+UNREADABLE_MESSAGE = "No se ha podido leer el mensaje. Inténtelo de nuevo."
+UNREADABLE_AUDIO = "No se ha podido leer el audio. Inténtelo de nuevo."
+AUDIO_TOO_LONG = "El audio es demasiado largo: hable menos de un minuto seguido."
+TEXT_TOO_LONG = "El mensaje es demasiado largo: escríbalo en varios más cortos."
+
 
 def display_error(error: str) -> str:
     for pattern, spanish in _TRANSLATIONS:

@@ -189,6 +189,31 @@ def read_back(claim: Claim) -> BotMessage:
 # --- closing ------------------------------------------------------------------------------
 
 
+def confirm_coverage_value(claim: Claim, policy: Policy | None) -> BotMessage:
+    """Asks the declarant to confirm the value that would leave the loss uncovered, before the
+    claim closes over it. `policy` is the claim's identified policy."""
+    if claim.coverage_issue is ClosureReason.OUTSIDE_SPAIN:
+        assert claim.loss_location
+        place = f"{claim.loss_location.municipality} ({claim.loss_location.country})"
+        return BotMessage(
+            f"Me ha indicado que el siniestro ocurrió en {place}. Por esta vía solo podemos "
+            "tramitar siniestros ocurridos en España. ¿Es correcto el lugar? Si no lo es, "
+            "dígame dónde ocurrió."
+        )
+    assert claim.loss_window and policy
+    outside = (
+        "queda en parte fuera"
+        if claim.coverage_issue is ClosureReason.PARTIAL_COVERAGE
+        else "queda fuera"
+    )
+    return BotMessage(
+        f"Me ha indicado que el siniestro ocurrió {format_loss_window(claim.loss_window)}. "
+        f"Su póliza está en vigor del {_date(policy.start_date)} al {_date(policy.end_date)}, "
+        f"así que esa fecha {outside} de la vigencia. ¿Es correcta? Si no lo es, dígame cuándo "
+        "ocurrió."
+    )
+
+
 def confirmed(reference: str) -> BotMessage:
     def message(ref: str) -> str:
         return (

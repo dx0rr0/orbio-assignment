@@ -23,6 +23,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "daphne>=4.2.3",
+    "mypy>=2.4.0",
     "pytest>=8.4",
     "pytest-asyncio>=1.4.0",
     "pytest-django>=4.14.0",
@@ -37,7 +38,8 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-DJANGO_SETTINGS_MODULE = "claims_service.settings"
+DJANGO_SETTINGS_MODULE = "tests.settings"
+pythonpath = ["."]
 addopts = "-m 'not e2e'"
 markers = ["e2e: hits real providers; run on demand with `pytest -m e2e`"]
 
@@ -52,3 +54,12 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 [tool.ruff.lint.per-file-ignores]
 # Django declares model options as class attributes.
 "**/models.py" = ["RUF012"]
+
+[tool.mypy]
+python_version = "3.13"
+files = ["src", "evals", "scripts"]
+exclude = ["/migrations/"]
+# Django, Celery and Channels ship no type information; checking against them is out of scope.
+[[tool.mypy.overrides]]
+module = ["django.*", "celery.*", "channels.*", "ninja.*"]
+ignore_missing_imports = true

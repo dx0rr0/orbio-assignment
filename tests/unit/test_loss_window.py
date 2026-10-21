@@ -14,6 +14,13 @@ def test_start_only_collapses_to_an_instant():
     assert window.start == window.end
 
 
+@pytest.mark.parametrize("end", [None, "", "  "])
+def test_blank_end_collapses_to_an_instant(end):
+    # The tool schema requires `end`, so models send it empty when only the start is known.
+    window = parse_loss_window({"start": "2026-10-19T20:00", "end": end}, NOW)
+    assert window.start == window.end
+
+
 def test_datetime_without_offset_is_madrid_time():
     window = parse_loss_window({"start": "2026-10-19T20:00:00"}, NOW)
     assert window.start == datetime(2026, 10, 19, 20, 0, tzinfo=MADRID)

@@ -5,7 +5,7 @@ from datetime import datetime
 
 from claims_agent.domain import MADRID, Claim, Policy
 from claims_agent.engine.templates import INSURER
-from claims_agent.engine.tools import CONFIRM_CLAIM, DECLARANT_REFUSES, UPDATE_CLAIM
+from claims_agent.engine.tools import CONFIRM_CLAIM, CONFIRM_VALUE, DECLARANT_REFUSES, UPDATE_CLAIM
 
 _WEEKDAYS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
 
@@ -20,10 +20,10 @@ short sentences, and ask for at most two things at a time. No lists, markdown or
 - Follow the order of the missing fields below, but accept any data the declarant offers \
 early, in any order.
 - If the declarant goes off-topic, answer in one sentence and return to the claim.
-- Once the policy is validated you are told the policyholder's name. Use it only to tell \
-whether the declarant or the driver is the policyholder (if the declarant is the \
-policyholder and says "conducía yo", the policyholder was driving). Never say it to the \
-declarant, and ask if you are not sure.
+- Once the policy number and the plate are validated you are told the policyholder's \
+name. Use it only to tell whether the declarant or the driver is the policyholder (if the \
+declarant is the policyholder and says "conducía yo", the policyholder was driving). Never \
+say it to the declarant, and ask if you are not sure.
 - For a theft or parked damage nobody was driving: the driver is whoever last drove and \
 parked the vehicle.
 
@@ -54,6 +54,10 @@ messages itself.
 claim is complete. When the declarant answers that read-back saying everything is correct, \
 call `{CONFIRM_CLAIM}`. If they want to correct something, record the correction with \
 `{UPDATE_CLAIM}`.
+- When a date or place would leave the loss uncovered, the system asks the declarant to \
+confirm it (`value_to_confirm` below). If they say it is correct, call `{CONFIRM_VALUE}`; \
+if they correct it, record the correction with `{UPDATE_CLAIM}`. Never tell them yourself \
+whether the loss is covered.
 - Never give medical or legal advice. If someone is injured, the system already advises \
 calling 112.
 """
@@ -76,6 +80,7 @@ def _state(claim: Claim, policy: Policy | None) -> str:
             "policyholder_name": policy.holder_name if policy else None,
             "collected": collected,
             "missing_fields_in_order": list(claim.missing_fields),
+            "value_to_confirm": claim.value_to_confirm,
             "last_errors": claim.field_errors,
         },
         ensure_ascii=False,

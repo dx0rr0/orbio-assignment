@@ -1,7 +1,7 @@
 import pytest
 
 from claims_agent.domain import Claim
-from claims_agent.engine.hallucinations import check_reply
+from claims_agent.engine.hallucinations import check_reply, check_summary
 
 VALIDATED = Claim(policy_number="AUT-48213907", plate="4721KLM")
 
@@ -39,4 +39,12 @@ def test_identifiers_nobody_gave_are_findings():
     assert findings == [
         "policy number AUT-99998888 was never given",
         "plate 1234BCD was never given",
+    ]
+
+
+def test_a_summary_may_mention_the_confirmation_but_not_money_or_unknown_plates():
+    key_points = ["Declaración confirmada con la referencia SIN-2026-000001.", "Daños de 300 €."]
+    assert check_summary(key_points, VALIDATED) == ["mentions money"]
+    assert check_summary(["Choque con el 9999 ZZZ."], VALIDATED) == [
+        "plate 9999ZZZ was never given"
     ]

@@ -10,13 +10,12 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from claims_agent.domain import (
-    CLAIM_FIELDS,
     MADRID,
     Claim,
     ClaimStatus,
@@ -29,7 +28,9 @@ from claims_agent.domain import (
     apply_update,
     close,
     confirm,
+    confirm_value,
     format_reference,
+    identified_policy,
     policy_number_to_look_up,
 )
 from claims_agent.engine import templates, tools
@@ -39,6 +40,7 @@ from claims_agent.engine.templates import BotMessage
 from claims_agent.ports import (
     ChatModel,
     Completion,
+    ConcurrentUpdateError,
     ConversationRepository,
     LLMError,
     NullTelemetry,
@@ -57,8 +59,10 @@ MAX_REFUSALS = 2
 MAX_LLM_ROUNDS = 4
 # Waits between attempts of a failed LLM call; one more attempt than waits.
 LLM_RETRY_DELAYS = (0.5, 1.5)
+# Seconds the LLM part of a turn may take, retries included, before the agent apologises.
+TURN_DEADLINE_SECONDS = 25.0
 
-_WORD = re.compile(r"\w{2,}")
+_WORD = re.compile(r"\w")
 
 
 @dataclass(frozen=True)
@@ -77,6 +81,18 @@ class TurnResult:
         )
 
 
+@dataclass
+class _Turn:
+    """What one declarant turn has done so far, so that a value the LLM sends again within the
+    turn counts as one answer (one failed attempt, one refusal)."""
+
+    now: datetime
+    # The conversation after the last completed tool round, kept if the turn runs out of time.
+    progress: Conversation | None = None
+    failed_fields: set[str] = field(default_factory=set)
+    refused_fields: set[str] = field(default_factory=set)
+
+
 class _LLMUnavailableError(Exception):
     """No usable completion this turn, after retries. Carries the conversation as it was when
     the LLM failed, so claim updates from tools that already ran are not lost."""
@@ -91,17 +107,15 @@ def is_unintelligible(utterance: str) -> bool:
     return _WORD.search(utterance) is None
 
 
-def _claim_data(claim: Claim) -> dict[str, Any]:
-    return {name: getattr(claim, name) for name in CLAIM_FIELDS}
-
-
 def _needs_script(before: Claim, after: Claim) -> bool:
     """Whether the claim changed in a way only a template may announce."""
     if after.status.is_final:
         return True
+    if after.coverage_issue is not None:
+        return before.fingerprint_to_confirm != after.fingerprint_to_confirm
     return after.status is ClaimStatus.PENDING_CONFIRMATION and (
         before.status is not ClaimStatus.PENDING_CONFIRMATION
-        or _claim_data(before) != _claim_data(after)
+        or before.data_fingerprint != after.data_fingerprint
     )
 
 
@@ -114,35 +128,55 @@ class ConversationEngine:
         telemetry: Telemetry | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(MADRID),
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        turn_deadline: float = TURN_DEADLINE_SECONDS,
     ) -> None:
         self._llm = llm
         self._repository = repository
         self._telemetry = telemetry or NullTelemetry()
         self._clock = clock
         self._sleep = sleep
+        self._turn_deadline = turn_deadline
 
     async def start(self) -> TurnResult:
         conversation, replies = _say(Conversation.start(self._clock()), templates.greeting())
         return TurnResult(await self._repository.create(conversation), replies)
 
     async def handle_text(self, conversation_id: UUID, utterance: str) -> TurnResult:
+        now = self._clock()
         conversation = await self._repository.get(conversation_id)
+        if not conversation.claim.status.is_final:
+            # Mark the activity before the slow part of the turn, so that the abandonment
+            # sweep leaves the conversation alone while the turn is being processed.
+            try:
+                conversation = await self._repository.save(
+                    conversation.model_copy(update={"updated_at": now})
+                )
+            except ConcurrentUpdateError:
+                # Saved meanwhile, e.g. closed by the sweep right after we loaded it.
+                conversation = await self._repository.get(conversation_id)
         if conversation.claim.status.is_final:
             status = conversation.claim.status
             reply = templates.already_closed(conversation.claim)
             return TurnResult(conversation, (reply,), previous_status=status)
 
         previous_status = conversation.claim.status
-        now = self._clock()
         if is_unintelligible(utterance):
             conversation, replies = self._unintelligible(conversation)
         else:
             conversation = conversation.add(Message(role=Role.USER, content=utterance.strip()))
             conversation = conversation.model_copy(update={"unintelligible_streak": 0})
-            conversation, replies = await self._converse(conversation, now)
+            conversation, replies = await self._converse(conversation, _Turn(now))
 
         conversation = conversation.model_copy(update={"updated_at": now})
-        saved = await self._repository.save(conversation)
+        try:
+            saved = await self._repository.save(conversation)
+        except ConcurrentUpdateError:
+            stored = await self._repository.get(conversation_id)
+            if not stored.claim.status.is_final:
+                raise
+            # Closed by someone else while this turn ran: that is what the declarant must hear.
+            reply = templates.already_closed(stored.claim)
+            return TurnResult(stored, (reply,), previous_status=stored.claim.status)
         return TurnResult(saved, replies, previous_status=previous_status)
 
     # --- turn kinds -----------------------------------------------------------------------
@@ -159,13 +193,19 @@ class ConversationEngine:
         return _say(conversation, templates.closed(claim, policy=None))
 
     async def _converse(
-        self, conversation: Conversation, now: datetime
+        self, conversation: Conversation, turn: _Turn
     ) -> tuple[Conversation, tuple[BotMessage, ...]]:
         before = conversation.claim
         try:
-            conversation, llm_reply = await self._run_llm(conversation, now)
-        except _LLMUnavailableError as error:
-            conversation, llm_reply = error.conversation, None
+            async with asyncio.timeout(self._turn_deadline):
+                conversation, llm_reply = await self._run_llm(conversation, turn)
+        except (_LLMUnavailableError, TimeoutError) as error:
+            if isinstance(error, TimeoutError):
+                logger.warning("LLM part of the turn exceeded %.0f s", self._turn_deadline)
+                conversation = turn.progress or conversation
+            else:
+                conversation = error.conversation
+            llm_reply = None
             streak = conversation.llm_failure_streak + 1
             conversation = conversation.model_copy(update={"llm_failure_streak": streak})
             if streak >= MAX_LLM_FAILURES and not conversation.claim.status.is_final:
@@ -180,6 +220,10 @@ class ConversationEngine:
             replies.append(templates.emergency_advice())
         if _needs_script(before, after):
             replies.append(await self._script(after))
+            if not after.status.is_final:
+                conversation = conversation.model_copy(
+                    update={"read_back_fingerprint": after.fingerprint_to_confirm}
+                )
         elif llm_reply is not None:
             self._check_hallucinations(llm_reply, conversation)
             replies.append(BotMessage(llm_reply, scripted=False))
@@ -193,25 +237,27 @@ class ConversationEngine:
             return templates.confirmed(claim.reference)
         if claim.status is ClaimStatus.PENDING_CONFIRMATION:
             return templates.read_back(claim)
+        if not claim.status.is_final:
+            return templates.confirm_coverage_value(claim, await self._policy_of(claim))
         return templates.closed(claim, await self._policy_of(claim))
 
     async def _policy_of(self, claim: Claim) -> Policy | None:
-        """The claim's policy; a stored policy number has always been validated."""
-        if claim.policy_number is None:
+        """The claim's policy, once the declarant is identified by its number and plate."""
+        if claim.policy_number is None or claim.plate is None:
             return None
-        return await self._repository.get_policy(claim.policy_number)
+        return identified_policy(claim, await self._repository.get_policy(claim.policy_number))
 
     # --- LLM loop -------------------------------------------------------------------------
 
     async def _run_llm(
-        self, conversation: Conversation, now: datetime
+        self, conversation: Conversation, turn: _Turn
     ) -> tuple[Conversation, str | None]:
         """Let the LLM call tools until it replies in text, or until the claim changes in a way
         a template must announce (then the reply is None). The reply is returned, not added to
         the history. Tool results are kept even if the LLM fails afterwards."""
         before = conversation.claim
         for _ in range(MAX_LLM_ROUNDS):
-            completion = await self._complete(conversation, now)
+            completion = await self._complete(conversation, turn.now)
             if not completion.tool_calls:
                 if not completion.content or not completion.content.strip():
                     logger.warning("LLM returned neither text nor tool calls")
@@ -224,7 +270,12 @@ class ConversationEngine:
                 Message(role=Role.ASSISTANT, tool_calls=completion.tool_calls)
             )
             for call in completion.tool_calls:
-                conversation, result = await self._run_tool(conversation, call, now)
+                if _needs_script(before, conversation.claim):
+                    # The declarant must hear the template before anything else happens to
+                    # the claim (e.g. a confirmation of data they never heard read back).
+                    result: Mapping[str, Any] = {"error": "not run: the claim changed first"}
+                else:
+                    conversation, result = await self._run_tool(conversation, call, turn)
                 conversation = conversation.add(
                     Message(
                         role=Role.TOOL,
@@ -232,6 +283,7 @@ class ConversationEngine:
                         content=json.dumps(result, ensure_ascii=False),
                     )
                 )
+            turn.progress = conversation
             if _needs_script(before, conversation.claim):
                 return conversation, None
 
@@ -256,7 +308,7 @@ class ConversationEngine:
     # --- tools ----------------------------------------------------------------------------
 
     async def _run_tool(
-        self, conversation: Conversation, call: ToolCall, now: datetime
+        self, conversation: Conversation, call: ToolCall, turn: _Turn
     ) -> tuple[Conversation, Mapping[str, Any]]:
         if conversation.claim.status.is_final:
             return conversation, {"error": "the claim is already closed"}
@@ -270,24 +322,29 @@ class ConversationEngine:
 
         match call.name:
             case tools.UPDATE_CLAIM:
-                return await self._update_claim(conversation, arguments, now)
+                return await self._update_claim(conversation, arguments, turn)
             case tools.CONFIRM_CLAIM:
-                return await self._confirm_claim(conversation, now)
+                return await self._confirm_claim(conversation, turn.now)
+            case tools.CONFIRM_VALUE:
+                return self._confirm_value(conversation)
             case tools.DECLARANT_REFUSES:
-                return self._declarant_refuses(conversation, arguments)
+                return self._declarant_refuses(conversation, arguments, turn)
             case _:
                 logger.warning("LLM called unknown tool %s", call.name)
                 return conversation, {"error": f"unknown tool {call.name}"}
 
     async def _update_claim(
-        self, conversation: Conversation, proposed: Mapping[str, Any], now: datetime
+        self, conversation: Conversation, proposed: Mapping[str, Any], turn: _Turn
     ) -> tuple[Conversation, Mapping[str, Any]]:
         claim = conversation.claim
         proposed = tools.stated_values(proposed)
         with self._telemetry.span("validation", input=proposed) as span:
             number = policy_number_to_look_up(claim, proposed)
             policy: Policy | None = await self._repository.get_policy(number) if number else None
-            result = apply_update(claim, proposed, policy=policy, now=now)
+            result = apply_update(
+                claim, proposed, policy=policy, now=turn.now, already_failed=turn.failed_fields
+            )
+            turn.failed_fields |= result.rejected.keys()
             outcome = {
                 "accepted": list(result.accepted),
                 "rejected": dict(result.rejected),
@@ -306,24 +363,39 @@ class ConversationEngine:
                 "error": "the claim is not complete yet",
                 "missing_fields": list(claim.missing_fields),
             }
+        if conversation.read_back_fingerprint != claim.data_fingerprint:
+            return conversation, {"error": "the declarant has not heard the current data yet"}
         year = now.astimezone(MADRID).year
         sequence = await self._repository.next_reference_sequence(year)
         claim = confirm(claim, format_reference(year, sequence))
         return conversation.model_copy(update={"claim": claim}), {"status": claim.status.value}
 
+    def _confirm_value(self, conversation: Conversation) -> tuple[Conversation, Mapping[str, Any]]:
+        claim = conversation.claim
+        if claim.coverage_issue is None:
+            return conversation, {"error": "no value is waiting for confirmation"}
+        if conversation.read_back_fingerprint != claim.fingerprint_to_confirm:
+            return conversation, {"error": "the declarant has not been asked about it yet"}
+        claim = confirm_value(claim)
+        return conversation.model_copy(update={"claim": claim}), {"status": claim.status.value}
+
     def _declarant_refuses(
-        self, conversation: Conversation, arguments: Mapping[str, Any]
+        self, conversation: Conversation, arguments: Mapping[str, Any], turn: _Turn
     ) -> tuple[Conversation, Mapping[str, Any]]:
-        field = arguments.get("field")
-        if field not in conversation.claim.missing_fields:
-            return conversation, {"error": f"{field} is not a missing required field"}
-        refusals = conversation.refusals | {field: conversation.refusals.get(field, 0) + 1}
+        name = arguments.get("field")
+        if name not in conversation.claim.missing_fields:
+            return conversation, {"error": f"{name} is not a missing required field"}
+        explain = {
+            "instruction": "Explain briefly why this field is needed to process the claim "
+            "and ask for it once more."
+        }
+        if name in turn.refused_fields:
+            return conversation, explain
+        turn.refused_fields.add(name)
+        refusals = conversation.refusals | {name: conversation.refusals.get(name, 0) + 1}
         conversation = conversation.model_copy(update={"refusals": refusals})
-        if refusals[field] < MAX_REFUSALS:
-            return conversation, {
-                "instruction": "Explain briefly why this field is needed to process the claim "
-                "and ask for it once more."
-            }
+        if refusals[name] < MAX_REFUSALS:
+            return conversation, explain
         claim = close(conversation.claim, ClaimStatus.INCOMPLETE, ClosureReason.DATA_REFUSED)
         return conversation.model_copy(update={"claim": claim}), {"status": claim.status.value}
 

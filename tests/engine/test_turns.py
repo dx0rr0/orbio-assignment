@@ -1,10 +1,11 @@
+import asyncio
 import json
 
-from claims_agent.domain import ClaimStatus, ClosureReason, Role
-from claims_agent.engine import templates, tools
-from claims_agent.engine.tools import CONFIRM_CLAIM, DECLARANT_REFUSES, UPDATE_CLAIM
+from claims_agent.domain import ClaimStatus, ClosureReason, Role, close
+from claims_agent.engine import ConversationEngine, templates, tools
+from claims_agent.engine.tools import CONFIRM_CLAIM, CONFIRM_VALUE, DECLARANT_REFUSES, UPDATE_CLAIM
 from claims_agent.engine.turns import MAX_LLM_FAILURES, MAX_REPEAT_REQUESTS
-from tests.engine.fakes import COMPLETE, IDENTIFICATION, LLM_DOWN, NEW_POLICY, call, say
+from tests.engine.fakes import COMPLETE, IDENTIFICATION, LLM_DOWN, NEW_POLICY, call, calls, say
 
 
 def texts(result) -> list[str]:
@@ -51,6 +52,18 @@ async def test_system_prompt_carries_the_claim_state_and_current_date(engine, ll
     # The policyholder's name is only shared once the policy has been validated.
     assert '"policyholder_name": null' in first["system"]
     assert '"policyholder_name": "María López Fernández"' in second["system"]
+
+
+async def test_policyholder_name_is_not_shared_with_a_plate_that_does_not_match(
+    engine, llm, conversation_id
+):
+    wrong_plate = {"policy_number": "AUT-48213907", "plate": "9999 ZZZ"}
+    llm.then(call(UPDATE_CLAIM, wrong_plate), say("La matrícula no coincide. ¿Me la repite?"))
+
+    await engine.handle_text(conversation_id, "AUT 48213907, matrícula 9999 ZZZ")
+
+    assert '"policyholder_name": null' in llm.requests[1]["system"]
+    assert "María López Fernández" not in llm.requests[1]["system"]
 
 
 # --- tools --------------------------------------------------------------------------------
@@ -148,6 +161,53 @@ async def test_correction_while_pending_is_read_back_again(engine, llm, conversa
     assert result.replies[0].text.startswith("Le leo los datos")
 
 
+async def test_completing_and_confirming_in_one_response_only_reads_back(
+    engine, llm, conversation_id
+):
+    llm.then(calls(call(UPDATE_CLAIM, COMPLETE), call(CONFIRM_CLAIM)))
+
+    result = await engine.handle_text(conversation_id, "Ya está todo, confírmelo")
+
+    claim = result.conversation.claim
+    assert claim.status is ClaimStatus.PENDING_CONFIRMATION
+    assert claim.reference is None
+    assert texts(result) == [templates.read_back(claim).text]
+    # Every tool call gets a result, so the history stays valid for the next LLM call.
+    [_, skipped] = [m for m in result.conversation.messages if m.role is Role.TOOL]
+    assert "error" in json.loads(skipped.content)
+
+
+async def test_correcting_and_confirming_in_one_response_reads_back_again(
+    engine, llm, conversation_id
+):
+    correction = {"loss_window": {"start": "2026-10-19T20:00", "end": "2026-10-19T20:00"}}
+    llm.then(
+        call(UPDATE_CLAIM, COMPLETE), calls(call(UPDATE_CLAIM, correction), call(CONFIRM_CLAIM))
+    )
+    await engine.handle_text(conversation_id, "Todos los datos")
+
+    result = await engine.handle_text(conversation_id, "Fue a las ocho, confírmelo")
+
+    claim = result.conversation.claim
+    assert claim.status is ClaimStatus.PENDING_CONFIRMATION
+    assert texts(result) == [templates.read_back(claim).text]
+
+
+async def test_confirming_data_that_was_not_read_back_is_refused(engine, llm, conversation_id):
+    # Whatever path got unheard data into a pending claim, it cannot be confirmed.
+    llm.then(call(UPDATE_CLAIM, COMPLETE))
+    await engine.handle_text(conversation_id, "Todos los datos")
+    conversation = await engine._repository.get(conversation_id)
+    unheard = conversation.claim.model_copy(update={"description": "Otra cosa que nadie oyó"})
+    await engine._repository.save(conversation.model_copy(update={"claim": unheard}))
+    llm.then(call(CONFIRM_CLAIM), say("Antes le leo los datos de nuevo."))
+
+    result = await engine.handle_text(conversation_id, "Sí, confírmelo")
+
+    assert result.conversation.claim.status is ClaimStatus.PENDING_CONFIRMATION
+    assert "error" in tool_results(llm.requests[-1])[-1]
+
+
 async def test_no_answer_to_the_read_back_lets_the_llm_ask_what_to_change(
     engine, llm, conversation_id
 ):
@@ -162,26 +222,76 @@ async def test_no_answer_to_the_read_back_lets_the_llm_ask_what_to_change(
 # --- closing by code ----------------------------------------------------------------------
 
 
-async def test_loss_outside_the_coverage_period_is_closed_with_a_template(
+LAST_WEEK = {
+    "policy_number": NEW_POLICY.number,
+    "plate": NEW_POLICY.plate,
+    "loss_window": {"start": "2026-10-13T22:00", "end": "2026-10-14T08:00"},
+}
+
+
+async def test_a_value_outside_the_coverage_period_is_stated_back_for_confirmation(
     engine, llm, conversation_id
 ):
-    llm.then(
-        call(
-            UPDATE_CLAIM,
-            {
-                "policy_number": NEW_POLICY.number,
-                "loss_window": {"start": "2026-10-13T22:00", "end": "2026-10-14T08:00"},
-            },
-        )
-    )
+    llm.then(call(UPDATE_CLAIM, LAST_WEEK))
 
     result = await engine.handle_text(conversation_id, "Me robaron el coche la semana pasada")
+
+    claim = result.conversation.claim
+    assert claim.status is ClaimStatus.IN_PROGRESS
+    assert claim.coverage_issue is ClosureReason.OUTSIDE_COVERAGE_PERIOD
+    assert len(llm.requests) == 1  # the question is a template
+    assert texts(result) == [templates.confirm_coverage_value(claim, NEW_POLICY).text]
+    assert "13 de octubre de 2026" in result.replies[0].text
+    assert "17 de octubre de 2026" in result.replies[0].text
+
+
+async def test_a_confirmed_value_outside_the_coverage_period_closes_the_claim(
+    engine, llm, conversation_id
+):
+    llm.then(call(UPDATE_CLAIM, LAST_WEEK), call(CONFIRM_VALUE))
+    await engine.handle_text(conversation_id, "Me robaron el coche la semana pasada")
+
+    result = await engine.handle_text(conversation_id, "Sí, fue el martes 13")
 
     claim = result.conversation.claim
     assert claim.status is ClaimStatus.NOT_COVERED
     assert claim.closure_reason is ClosureReason.OUTSIDE_COVERAGE_PERIOD
     assert texts(result) == [templates.closed(claim, NEW_POLICY).text]
-    assert "17 de octubre de 2026" in result.replies[0].text
+
+
+async def test_a_corrected_value_reopens_the_flow(engine, llm, conversation_id):
+    correction = {"loss_window": {"start": "2026-10-19T22:00", "end": "2026-10-20T08:00"}}
+    llm.then(
+        call(UPDATE_CLAIM, LAST_WEEK),
+        call(UPDATE_CLAIM, correction),
+        say("Gracias. ¿Cómo se llama?"),
+    )
+    await engine.handle_text(conversation_id, "Me robaron el coche la semana pasada")
+
+    result = await engine.handle_text(conversation_id, "No, perdone, fue anoche")
+
+    claim = result.conversation.claim
+    assert claim.status is ClaimStatus.IN_PROGRESS
+    assert claim.coverage_issue is None
+    assert texts(result) == ["Gracias. ¿Cómo se llama?"]
+
+
+async def test_a_value_cannot_be_confirmed_in_the_response_that_flags_it(
+    engine, llm, conversation_id
+):
+    llm.then(calls(call(UPDATE_CLAIM, LAST_WEEK), call(CONFIRM_VALUE)))
+
+    result = await engine.handle_text(conversation_id, "La semana pasada, y sí, es correcto")
+
+    assert result.conversation.claim.status is ClaimStatus.IN_PROGRESS
+
+
+async def test_confirming_a_value_when_none_is_flagged_is_refused(engine, llm, conversation_id):
+    llm.then(call(CONFIRM_VALUE), say("¿Me indica su número de póliza?"))
+
+    await engine.handle_text(conversation_id, "Sí")
+
+    assert "error" in tool_results(llm.requests[1])[0]
 
 
 async def test_second_refusal_closes_the_claim_as_incomplete(engine, llm, conversation_id):
@@ -385,3 +495,91 @@ async def test_validation_is_traced_with_the_stated_values(engine, llm, telemetr
     await engine.handle_text(conversation_id, "AUT 48213907, 4721 KLM")
 
     assert telemetry.spans == [("validation", IDENTIFICATION)]
+
+
+# --- counting per declarant turn ----------------------------------------------------------
+
+
+async def test_a_value_retried_within_one_turn_fails_once(engine, llm, conversation_id):
+    bad_plate = call(UPDATE_CLAIM, IDENTIFICATION | {"plate": "9999 ZZZ"})
+    llm.then(bad_plate, bad_plate, bad_plate, say("La matrícula no coincide. ¿Me la repite?"))
+
+    result = await engine.handle_text(conversation_id, "AUT 48213907, la 9999 ZZZ")
+
+    claim = result.conversation.claim
+    assert claim.status is ClaimStatus.IN_PROGRESS
+    assert claim.failed_attempts == {"plate": 1}
+
+
+async def test_two_refusals_in_one_response_count_once(engine, llm, conversation_id):
+    refusal = call(DECLARANT_REFUSES, {"field": "declarant_name"})
+    llm.then(calls(refusal, refusal), say("Lo necesito para tramitar el parte. ¿Me lo dice?"))
+
+    result = await engine.handle_text(conversation_id, "No le voy a decir mi nombre")
+
+    assert result.conversation.claim.status is ClaimStatus.IN_PROGRESS
+    assert result.conversation.refusals == {"declarant_name": 1}
+    assert texts(result) == ["Lo necesito para tramitar el parte. ¿Me lo dice?"]
+
+
+async def test_a_conversation_closed_while_the_turn_ran_is_announced_as_closed(
+    engine, llm, repository, conversation_id
+):
+    scripted_complete = llm.complete
+
+    async def closed_meanwhile(**request):
+        stored = await repository.get(conversation_id)
+        claim = close(stored.claim, ClaimStatus.INCOMPLETE, ClosureReason.ABANDONED)
+        await repository.save(stored.model_copy(update={"claim": claim}))
+        return await scripted_complete(**request)
+
+    llm.complete = closed_meanwhile
+    llm.then(say("¿Me indica su número de póliza?"))
+
+    result = await engine.handle_text(conversation_id, "Hola")
+
+    claim = result.conversation.claim
+    assert claim.status is ClaimStatus.INCOMPLETE
+    assert texts(result) == [templates.already_closed(claim).text]
+
+
+async def test_a_turn_that_takes_too_long_apologises(llm, repository, conversation_id):
+    class HangingLLM:
+        async def complete(self, **request):
+            await asyncio.Event().wait()  # never answers
+
+    engine = ConversationEngine(llm=HangingLLM(), repository=repository, turn_deadline=0.05)
+
+    result = await engine.handle_text(conversation_id, "Hola, quiero dar un parte")
+
+    assert texts(result) == [templates.technical_problem().text]
+    assert result.conversation.llm_failure_streak == 1
+    stored = await repository.get(conversation_id)
+    assert "Hola, quiero dar un parte" in [m.content for m in stored.transcript]
+
+
+async def test_tool_results_survive_the_turn_deadline(llm, repository, conversation_id):
+    class SlowAfterTools:
+        calls = 0
+
+        async def complete(self, **request):
+            self.calls += 1
+            if self.calls == 1:
+                return call(UPDATE_CLAIM, IDENTIFICATION)
+            await asyncio.Event().wait()
+
+    engine = ConversationEngine(llm=SlowAfterTools(), repository=repository, turn_deadline=0.05)
+
+    result = await engine.handle_text(conversation_id, "AUT 48213907, 4721 KLM")
+
+    assert result.conversation.claim.policy_number == "AUT-48213907"
+    assert texts(result) == [templates.technical_problem().text]
+
+
+async def test_a_one_character_answer_reaches_the_llm(engine, llm, conversation_id):
+    llm.then(say("Gracias. ¿En qué municipio?"))
+
+    result = await engine.handle_text(conversation_id, "8")
+
+    assert texts(result) == ["Gracias. ¿En qué municipio?"]
+    assert result.conversation.unintelligible_streak == 0
