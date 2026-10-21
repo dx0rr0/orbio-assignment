@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import time
+from dataclasses import replace
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,26 +13,13 @@ from django.urls import path
 from claims_agent.engine import templates
 from claims_agent.engine.tools import CONFIRM_CLAIM, UPDATE_CLAIM
 from claims_agent.ports import ConcurrentUpdateError, SpeechError
-from claims_service.asgi import application
 from claims_service.intake import consumers
 from claims_service.intake.consumers import NOT_FOUND_CLOSE_CODE, ConversationConsumer
 from claims_service.intake.groups import group_name
+from claims_service.intake.routing import websocket_application
 from tests.engine.fakes import COMPLETE, call, say
 
 pytestmark = pytest.mark.django_db(transaction=True)
-
-
-@pytest.fixture
-def summary_requests(monkeypatch) -> list[str]:
-    requested: list[str] = []
-
-    class FakeTask:
-        @staticmethod
-        def apply_async(args: list[str], **options: object) -> None:
-            requested.extend(args)
-
-    monkeypatch.setattr(consumers, "generate_claim_summary", FakeTask)
-    return requested
 
 
 async def receive_until(communicator, last_type: str) -> list[dict]:
@@ -46,21 +34,21 @@ async def receive_until(communicator, last_type: str) -> list[dict]:
 ORIGIN = (b"origin", b"http://localhost:8080")
 
 
-async def start(path: str = "/ws/conversations/"):
+async def start(application, path: str = "/ws/conversations/"):
     communicator = WebsocketCommunicator(application, path, headers=[ORIGIN])
     connected, _ = await communicator.connect()
     assert connected
     return communicator
 
 
-async def started_conversation() -> tuple[WebsocketCommunicator, str]:
-    communicator = await start()
+async def started_conversation(application) -> tuple[WebsocketCommunicator, str]:
+    communicator = await start(application)
     events = await receive_until(communicator, "audio")
     return communicator, events[0]["conversation_id"]
 
 
-async def test_connecting_starts_a_conversation_with_a_spoken_greeting(tts):
-    communicator = await start()
+async def test_connecting_starts_a_conversation_with_a_spoken_greeting(application, tts):
+    communicator = await start(application)
 
     events = await receive_until(communicator, "audio")
 
@@ -83,8 +71,8 @@ async def test_connecting_starts_a_conversation_with_a_spoken_greeting(tts):
     await communicator.disconnect()
 
 
-async def test_text_turn_without_audio(llm, policies, tts):
-    communicator, _ = await started_conversation()
+async def test_text_turn_without_audio(application, llm, policies, tts):
+    communicator, _ = await started_conversation(application)
     llm.then(
         call(UPDATE_CLAIM, {"policy_number": "AUT-48213907", "plate": "9999 ZZZ"}),
         say("La matrícula no coincide. ¿Puede repetirla?"),
@@ -103,8 +91,8 @@ async def test_text_turn_without_audio(llm, policies, tts):
     await communicator.disconnect()
 
 
-async def test_audio_turn_sends_the_transcript_then_the_spoken_reply(llm, stt, tts):
-    communicator, _ = await started_conversation()
+async def test_audio_turn_sends_the_transcript_then_the_spoken_reply(application, llm, stt, tts):
+    communicator, _ = await started_conversation(application)
     stt.transcripts.append("Hola, quiero dar un parte")
     llm.then(say("¿Me indica su número de póliza?"))
     wav = base64.b64encode(b"RIFF-utterance").decode()
@@ -118,8 +106,8 @@ async def test_audio_turn_sends_the_transcript_then_the_spoken_reply(llm, stt, t
     await communicator.disconnect()
 
 
-async def test_failed_transcription_asks_to_repeat(llm, stt):
-    communicator, _ = await started_conversation()
+async def test_failed_transcription_asks_to_repeat(application, llm, stt):
+    communicator, _ = await started_conversation(application)
     stt.transcripts.append(SpeechError("STT down"))
 
     await communicator.send_json_to({"type": "audio", "data": base64.b64encode(b"x").decode()})
@@ -131,8 +119,8 @@ async def test_failed_transcription_asks_to_repeat(llm, stt):
     await communicator.disconnect()
 
 
-async def test_failed_synthesis_still_sends_the_text(llm, tts):
-    communicator, _ = await started_conversation()
+async def test_failed_synthesis_still_sends_the_text(application, llm, tts):
+    communicator, _ = await started_conversation(application)
     tts.fail = True
     llm.then(say("¿Me indica su número de póliza?"))
 
@@ -159,8 +147,8 @@ async def test_failed_synthesis_still_sends_the_text(llm, tts):
         ),
     ],
 )
-async def test_malformed_messages_get_an_error_and_no_turn(llm, message, error):
-    communicator, _ = await started_conversation()
+async def test_malformed_messages_get_an_error_and_no_turn(application, llm, message, error):
+    communicator, _ = await started_conversation(application)
 
     await communicator.send_json_to(message)
     event = await communicator.receive_json_from(timeout=5)
@@ -171,8 +159,8 @@ async def test_malformed_messages_get_an_error_and_no_turn(llm, message, error):
     await communicator.disconnect()
 
 
-async def test_confirmation_requests_the_summary(llm, policies, summary_requests):
-    communicator, conversation_id = await started_conversation()
+async def test_confirmation_requests_the_summary(application, llm, policies, summary_requests):
+    communicator, conversation_id = await started_conversation(application)
     llm.then(call(UPDATE_CLAIM, COMPLETE), call(CONFIRM_CLAIM))
 
     await communicator.send_json_to({"type": "text", "text": "Todos los datos"})
@@ -187,9 +175,9 @@ async def test_confirmation_requests_the_summary(llm, policies, summary_requests
     await communicator.disconnect()
 
 
-async def resume(conversation_id: str, message: object, app=application):
+async def resume(application, conversation_id: str, message: object):
     communicator = WebsocketCommunicator(
-        app, f"/ws/conversations/{conversation_id}/", headers=[ORIGIN]
+        application, f"/ws/conversations/{conversation_id}/", headers=[ORIGIN]
     )
     connected, _ = await communicator.connect()
     assert connected
@@ -197,18 +185,18 @@ async def resume(conversation_id: str, message: object, app=application):
     return communicator
 
 
-async def started_with_token() -> tuple[str, str]:
-    first = await start()
+async def started_with_token(application) -> tuple[str, str]:
+    first = await start(application)
     started = await first.receive_json_from(timeout=5)
     await receive_until(first, "audio")
     await first.disconnect()
     return started["conversation_id"], started["token"]
 
 
-async def test_resuming_with_the_token_sends_a_snapshot(llm):
-    conversation_id, token = await started_with_token()
+async def test_resuming_with_the_token_sends_a_snapshot(application, llm):
+    conversation_id, token = await started_with_token(application)
 
-    communicator = await resume(conversation_id, {"type": "resume", "token": token})
+    communicator = await resume(application, conversation_id, {"type": "resume", "token": token})
     event = await communicator.receive_json_from(timeout=5)
 
     assert event["type"] == "snapshot"
@@ -222,8 +210,8 @@ async def test_resuming_with_the_token_sends_a_snapshot(llm):
 NOT_FOUND = {"type": "websocket.close", "code": NOT_FOUND_CLOSE_CODE}
 
 
-async def test_unknown_conversation_is_closed_with_not_found():
-    communicator = await resume(str(uuid4()), {"type": "resume", "token": "whatever"})
+async def test_unknown_conversation_is_closed_with_not_found(application):
+    communicator = await resume(application, str(uuid4()), {"type": "resume", "token": "whatever"})
 
     assert await communicator.receive_output(timeout=5) == NOT_FOUND
 
@@ -239,11 +227,11 @@ async def test_unknown_conversation_is_closed_with_not_found():
         [1, 2],
     ],
 )
-async def test_resuming_without_the_token_is_closed_as_not_found(llm, message):
+async def test_resuming_without_the_token_is_closed_as_not_found(application, llm, message):
     # Not found, as for an unknown id: nobody learns which conversation ids exist.
-    conversation_id, _ = await started_with_token()
+    conversation_id, _ = await started_with_token(application)
 
-    communicator = await resume(conversation_id, message)
+    communicator = await resume(application, conversation_id, message)
 
     assert await communicator.receive_output(timeout=5) == NOT_FOUND
     assert llm.requests == []
@@ -253,16 +241,16 @@ class ImpatientConsumer(ConversationConsumer):
     resume_timeout_s = 0.1
 
 
-def quick_to_give_up() -> URLRouter:
-    consumer = ImpatientConsumer.as_asgi()
+def quick_to_give_up(services) -> URLRouter:
+    consumer = ImpatientConsumer.as_asgi(services=services)
     return URLRouter([path("ws/conversations/<uuid:conversation_id>/", consumer)])
 
 
-async def test_a_token_in_the_url_is_not_enough(llm):
+async def test_a_token_in_the_url_is_not_enough(llm, application, services):
     # URLs end up in logs, so the token only counts in the handshake message, sent in time.
-    conversation_id, token = await started_with_token()
+    conversation_id, token = await started_with_token(application)
     communicator = WebsocketCommunicator(
-        quick_to_give_up(), f"/ws/conversations/{conversation_id}/?token={token}"
+        quick_to_give_up(services), f"/ws/conversations/{conversation_id}/?token={token}"
     )
     connected, _ = await communicator.connect()
     assert connected
@@ -272,8 +260,8 @@ async def test_a_token_in_the_url_is_not_enough(llm):
     assert await communicator.receive_nothing()
 
 
-async def test_background_updates_reach_watchers():
-    communicator, conversation_id = await started_conversation()
+async def test_background_updates_reach_watchers(application):
+    communicator, conversation_id = await started_conversation(application)
     payload = {"type": "claim_updated", "claim": {"status": "incomplete"}, "summary": None}
 
     await get_channel_layer().group_send(
@@ -284,14 +272,12 @@ async def test_background_updates_reach_watchers():
     await communicator.disconnect()
 
 
-async def test_a_broker_outage_does_not_break_the_confirmation(llm, policies, monkeypatch):
-    class BrokenTask:
-        @staticmethod
-        def apply_async(args: list[str], **options: object) -> None:
-            raise ConnectionError("redis is down")
+async def test_a_broker_outage_does_not_break_the_confirmation(llm, policies, services):
+    def broker_down(conversation_id: str) -> None:
+        raise ConnectionError("redis is down")
 
-    monkeypatch.setattr(consumers, "generate_claim_summary", BrokenTask)
-    communicator, _ = await started_conversation()
+    application = websocket_application(replace(services, request_summary=broker_down))
+    communicator, _ = await started_conversation(application)
     llm.then(call(UPDATE_CLAIM, COMPLETE), call(CONFIRM_CLAIM))
     await communicator.send_json_to({"type": "text", "text": "Todos los datos"})
     await receive_until(communicator, "claim_updated")
@@ -305,8 +291,8 @@ async def test_a_broker_outage_does_not_break_the_confirmation(llm, policies, mo
     await communicator.disconnect()
 
 
-async def test_safety_advice_is_flagged_as_an_alert(llm):
-    communicator, _ = await started_conversation()
+async def test_safety_advice_is_flagged_as_an_alert(application, llm):
+    communicator, _ = await started_conversation(application)
     llm.then(call(UPDATE_CLAIM, {"injuries": True}), say("Lo siento. ¿Dónde ocurrió?"))
 
     await communicator.send_json_to({"type": "text", "text": "Mi hija está herida"})
@@ -319,14 +305,12 @@ async def test_safety_advice_is_flagged_as_an_alert(llm):
     await communicator.disconnect()
 
 
-async def test_a_slow_broker_does_not_block_the_event_loop(llm, policies, monkeypatch):
-    class SlowTask:
-        @staticmethod
-        def apply_async(args: list[str], **options: object) -> None:
-            time.sleep(0.5)  # kombu retrying a connection, synchronously
+async def test_a_slow_broker_does_not_block_the_event_loop(llm, policies, services):
+    def slow_broker(conversation_id: str) -> None:
+        time.sleep(0.5)  # kombu retrying a connection, synchronously
 
-    monkeypatch.setattr(consumers, "generate_claim_summary", SlowTask)
-    communicator, _ = await started_conversation()
+    application = websocket_application(replace(services, request_summary=slow_broker))
+    communicator, _ = await started_conversation(application)
     llm.then(call(UPDATE_CLAIM, COMPLETE), call(CONFIRM_CLAIM))
     await communicator.send_json_to({"type": "text", "text": "Todos los datos"})
     await receive_until(communicator, "claim_updated")
@@ -350,16 +334,24 @@ async def test_a_slow_broker_does_not_block_the_event_loop(llm, policies, monkey
 
 
 class BrokenEngine:
+    """Starts conversations with `engine` (none: fails to), then fails every turn."""
+
+    def __init__(self, engine=None, error: Exception | None = None):
+        self._engine = engine
+        self._error = error or RuntimeError("database is down")
+
     async def start(self):
-        raise RuntimeError("database is down")
+        if self._engine is None:
+            raise self._error
+        return await self._engine.start()
 
     async def handle_text(self, conversation_id, utterance):
-        raise RuntimeError("database is down")
+        raise self._error
 
 
-async def test_an_unexpected_error_in_a_turn_apologises_and_keeps_the_socket(monkeypatch):
-    communicator, _ = await started_conversation()
-    monkeypatch.setattr(consumers.services, "engine", BrokenEngine)
+async def test_an_unexpected_error_in_a_turn_apologises_and_keeps_the_socket(engine, services):
+    application = websocket_application(replace(services, engine=BrokenEngine(engine)))
+    communicator, _ = await started_conversation(application)
 
     await communicator.send_json_to({"type": "text", "text": "Hola"})
     event = await communicator.receive_json_from(timeout=5)
@@ -371,9 +363,9 @@ async def test_an_unexpected_error_in_a_turn_apologises_and_keeps_the_socket(mon
     await communicator.disconnect()
 
 
-async def test_an_unexpected_error_when_connecting_apologises(monkeypatch):
-    monkeypatch.setattr(consumers.services, "engine", BrokenEngine)
-    communicator = await start()
+async def test_an_unexpected_error_when_connecting_apologises(services):
+    application = websocket_application(replace(services, engine=BrokenEngine()))
+    communicator = await start(application)
 
     event = await communicator.receive_json_from(timeout=5)
 
@@ -383,7 +375,7 @@ async def test_an_unexpected_error_when_connecting_apologises(monkeypatch):
 
 
 @pytest.mark.parametrize("headers", [[(b"origin", b"https://evil.example")], []])
-async def test_connections_from_other_origins_are_rejected(headers):
+async def test_connections_from_other_origins_are_rejected(application, headers):
     communicator = WebsocketCommunicator(application, "/ws/conversations/", headers=headers)
 
     connected, _ = await communicator.connect()
@@ -391,13 +383,11 @@ async def test_connections_from_other_origins_are_rejected(headers):
     assert not connected
 
 
-async def test_a_concurrent_update_asks_to_repeat_in_spanish(monkeypatch):
-    class RacingEngine:
-        async def handle_text(self, conversation_id, utterance):
-            raise ConcurrentUpdateError(conversation_id)
-
-    communicator, _ = await started_conversation()
-    monkeypatch.setattr(consumers.services, "engine", RacingEngine)
+async def test_a_concurrent_update_asks_to_repeat_in_spanish(engine, services):
+    # Another turn of the same conversation (e.g. a second tab) saved first.
+    racing = BrokenEngine(engine, error=ConcurrentUpdateError())
+    application = websocket_application(replace(services, engine=racing))
+    communicator, _ = await started_conversation(application)
 
     await communicator.send_json_to({"type": "text", "text": "Hola"})
     event = await communicator.receive_json_from(timeout=5)

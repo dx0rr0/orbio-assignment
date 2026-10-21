@@ -9,9 +9,11 @@ from django.utils import timezone
 from claims_agent.engine import ConversationEngine, Voice
 from claims_agent.ports import NullTelemetry, SpeechError
 from claims_agent.seed import seed_policies
-from claims_service.intake import services
+from claims_service.intake import access
 from claims_service.intake.models import PolicyRecord
 from claims_service.intake.repository import DjangoConversationRepository
+from claims_service.intake.routing import websocket_application
+from claims_service.intake.services import ConsumerServices
 from tests.engine.fakes import RecordingTelemetry, ScriptedLLM, no_sleep
 
 
@@ -77,12 +79,31 @@ def repository() -> DjangoConversationRepository:
     return DjangoConversationRepository()
 
 
-@pytest.fixture(autouse=True)
-def fake_providers(monkeypatch, llm, stt, tts, repository):
-    engine = ConversationEngine(
+@pytest.fixture
+def engine(llm, repository) -> ConversationEngine:
+    return ConversationEngine(
         llm=llm, repository=repository, telemetry=RecordingTelemetry(), sleep=no_sleep
     )
-    monkeypatch.setattr(services, "engine", lambda: engine)
-    monkeypatch.setattr(services, "voice", lambda: Voice(stt, tts))
-    monkeypatch.setattr(services, "repository", lambda: repository)
-    monkeypatch.setattr(services, "telemetry", NullTelemetry)
+
+
+@pytest.fixture
+def summary_requests() -> list[str]:
+    return []
+
+
+@pytest.fixture
+def services(engine, stt, tts, repository, summary_requests) -> ConsumerServices:
+    return ConsumerServices(
+        engine=engine,
+        voice=Voice(stt, tts),
+        repository=repository,
+        telemetry=NullTelemetry(),
+        access=access,
+        request_summary=summary_requests.append,
+    )
+
+
+@pytest.fixture
+def application(services):
+    """The WebSocket routes of the ASGI application, with the fakes above."""
+    return websocket_application(services)

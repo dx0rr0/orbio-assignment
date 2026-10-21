@@ -9,12 +9,13 @@ from ninja.errors import HttpError
 
 from claims_agent.domain import ClaimStatus
 from claims_agent.ports import ConversationNotFoundError
-from claims_service.intake import access, services
+from claims_service.intake import access
 from claims_service.intake.models import ConversationRecord
 from claims_service.intake.presenters import conversation_view
-from claims_service.intake.repository import to_conversation
+from claims_service.intake.repository import DjangoConversationRepository, to_conversation
 
 api = NinjaAPI(title="Claims intake", version="0.1.0")
+_repository = DjangoConversationRepository()
 
 
 @api.get("/health")
@@ -46,7 +47,7 @@ async def get_conversation(request, conversation_id: UUID) -> dict[str, Any]:
     if not await access.is_authorized(conversation_id, token):
         raise HttpError(404, "conversation not found")
     try:
-        conversation = await services.repository().get(conversation_id)
+        conversation = await _repository.get(conversation_id)
     except ConversationNotFoundError:
         raise HttpError(404, "conversation not found") from None
     return conversation_view(conversation)

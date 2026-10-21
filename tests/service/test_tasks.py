@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -11,28 +12,46 @@ from claims_agent.domain import (
     Conversation,
     PendingField,
 )
-from claims_agent.engine import templates
+from claims_agent.engine import ConversationEngine, templates
 from claims_agent.engine.summary import RECORD_KEY_POINTS
-from claims_service.intake import services, tasks
+from claims_agent.ports import NullTelemetry
+from claims_service.intake import tasks
 from claims_service.intake.repository import DjangoConversationRepository
 from claims_service.intake.tasks import (
     ABANDONED_AFTER,
     SUMMARY_GIVE_UP_AFTER,
     SUMMARY_GRACE,
+    TaskServices,
     generate_claim_summary,
     queue_missing_summaries,
     sweep_abandoned_conversations,
 )
-from tests.engine.fakes import LLM_DOWN, call, say
+from tests.engine.fakes import LLM_DOWN, call, no_sleep, say
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
 
 @pytest.fixture
-def notified(monkeypatch) -> list[Conversation]:
-    sent: list[Conversation] = []
-    monkeypatch.setattr(tasks, "_notify", sent.append)
-    return sent
+def notified() -> list[Conversation]:
+    return []
+
+
+@pytest.fixture
+def queued() -> list[str]:
+    return []
+
+
+@pytest.fixture(autouse=True)
+def task_services(repository, llm, notified, queued) -> TaskServices:
+    services = TaskServices(
+        repository=repository,
+        telemetry=NullTelemetry(),
+        new_chat_model=lambda: llm,
+        notify=notified.append,
+        queue_summary=queued.append,
+    )
+    tasks.configure(services)
+    return services
 
 
 def store(repository, *, idle: timedelta, claim: Claim | None = None) -> Conversation:
@@ -76,16 +95,16 @@ def test_recent_and_closed_conversations_are_left_alone(repository, notified):
     assert notified == []
 
 
-def test_a_turn_saved_during_the_sweep_wins(repository, notified, monkeypatch):
-    idle = store(repository, idle=ABANDONED_AFTER + timedelta(minutes=1))
-    original_save = DjangoConversationRepository.save
-
-    async def turn_lands_first(self, conversation):
+class TurnLandsFirst(DjangoConversationRepository):
+    async def save(self, conversation):
         # The declarant speaks between the sweep's read and its conditional write.
-        await original_save(self, await self.get(conversation.id))
-        return await original_save(self, conversation)
+        await super().save(await self.get(conversation.id))
+        return await super().save(conversation)
 
-    monkeypatch.setattr(DjangoConversationRepository, "save", turn_lands_first)
+
+def test_a_turn_saved_during_the_sweep_wins(repository, notified, task_services):
+    idle = store(repository, idle=ABANDONED_AFTER + timedelta(minutes=1))
+    tasks.configure(replace(task_services, repository=TurnLandsFirst()))
 
     assert sweep_abandoned_conversations() == 0
     assert async_to_sync(repository.get)(idle.id).claim.status is ClaimStatus.IN_PROGRESS
@@ -93,12 +112,6 @@ def test_a_turn_saved_during_the_sweep_wins(repository, notified, monkeypatch):
 
 
 # --- summary ------------------------------------------------------------------------------
-
-
-@pytest.fixture
-def summary_llm(monkeypatch, llm):
-    monkeypatch.setattr(services, "chat_model", lambda: llm)
-    return llm
 
 
 def confirmed_claim() -> Claim:
@@ -111,9 +124,9 @@ def confirmed_claim() -> Claim:
     )
 
 
-def test_summary_is_stored_and_pushed(repository, notified, summary_llm):
+def test_summary_is_stored_and_pushed(repository, notified, llm):
     conversation = store(repository, idle=timedelta(0), claim=confirmed_claim())
-    summary_llm.then(call(RECORD_KEY_POINTS, {"key_points": ["Rotura del parabrisas en la A-3."]}))
+    llm.then(call(RECORD_KEY_POINTS, {"key_points": ["Rotura del parabrisas en la A-3."]}))
 
     generate_claim_summary(str(conversation.id))
 
@@ -124,34 +137,32 @@ def test_summary_is_stored_and_pushed(repository, notified, summary_llm):
     assert "Ofrecer grúa y taller concertado." in summary.next_steps
     assert [c.summary for c in notified] == [summary]
     # The LLM saw the claim data and was given only the summary tool.
-    [request] = summary_llm.requests
+    [request] = llm.requests
     assert '"loss_type": "broken_glass"' in request["messages"][0].content
     assert [t["function"]["name"] for t in request["tools"]] == [RECORD_KEY_POINTS]
 
 
-def test_summary_is_not_regenerated(repository, notified, summary_llm):
+def test_summary_is_not_regenerated(repository, notified, llm):
     conversation = store(repository, idle=timedelta(0), claim=confirmed_claim())
-    summary_llm.then(call(RECORD_KEY_POINTS, {"key_points": ["Primero."]}))
+    llm.then(call(RECORD_KEY_POINTS, {"key_points": ["Primero."]}))
     generate_claim_summary(str(conversation.id))
 
     generate_claim_summary(str(conversation.id))  # e.g. a redelivered task
 
-    assert len(summary_llm.requests) == 1
+    assert len(llm.requests) == 1
     assert len(notified) == 1
 
 
-def test_unconfirmed_claims_get_no_summary(repository, notified, summary_llm):
+def test_unconfirmed_claims_get_no_summary(repository, notified, llm):
     conversation = store(repository, idle=timedelta(0))
 
     generate_claim_summary(str(conversation.id))
 
-    assert summary_llm.requests == []
+    assert llm.requests == []
     assert async_to_sync(repository.get)(conversation.id).summary is None
 
 
-def test_confirmed_claims_whose_summary_was_never_queued_are_queued(repository, monkeypatch):
-    queued: list[str] = []
-    monkeypatch.setattr(tasks.generate_claim_summary, "delay", queued.append)
+def test_confirmed_claims_whose_summary_was_never_queued_are_queued(repository, queued):
     lost = store(repository, idle=SUMMARY_GRACE + timedelta(minutes=1), claim=confirmed_claim())
     store(repository, idle=timedelta(0), claim=confirmed_claim())  # its task may be in flight
     store(repository, idle=SUMMARY_GIVE_UP_AFTER + timedelta(hours=1), claim=confirmed_claim())
@@ -178,7 +189,7 @@ async def idle_conversation(repository) -> Conversation:
     return await repository.create(conversation)
 
 
-async def test_a_conversation_receiving_a_turn_is_not_swept(repository, llm, notified):
+async def test_a_conversation_receiving_a_turn_is_not_swept(repository, engine, llm, notified):
     idle = await idle_conversation(repository)
     swept: list[int] = []
     scripted_complete = llm.complete
@@ -191,28 +202,28 @@ async def test_a_conversation_receiving_a_turn_is_not_swept(repository, llm, not
     llm.complete = slow_complete
     llm.then(say("¿Me indica su número de póliza?"))
 
-    result = await services.engine().handle_text(idle.id, "Hola, quiero dar un parte")
+    result = await engine.handle_text(idle.id, "Hola, quiero dar un parte")
 
     assert swept == [0]
     assert result.conversation.claim.status is ClaimStatus.IN_PROGRESS
     assert [reply.text for reply in result.replies] == ["¿Me indica su número de póliza?"]
 
 
-async def test_a_turn_on_a_conversation_swept_meanwhile_is_told_it_closed(
-    repository, llm, notified, monkeypatch
-):
-    idle = await idle_conversation(repository)
-    load = repository.get
-
-    async def load_then_sweep(conversation_id):
+class SweptAfterLoading(DjangoConversationRepository):
+    async def get(self, conversation_id):
         # The sweep closes the conversation right after the turn loaded it.
-        conversation = await load(conversation_id)
+        conversation = await super().get(conversation_id)
         await sync_to_async(sweep_abandoned_conversations)()
         return conversation
 
-    monkeypatch.setattr(repository, "get", load_then_sweep)
 
-    result = await services.engine().handle_text(idle.id, "Hola")
+async def test_a_turn_on_a_conversation_swept_meanwhile_is_told_it_closed(
+    repository, llm, notified
+):
+    idle = await idle_conversation(repository)
+    engine = ConversationEngine(llm=llm, repository=SweptAfterLoading(), sleep=no_sleep)
+
+    result = await engine.handle_text(idle.id, "Hola")
 
     claim = result.conversation.claim
     assert claim.closure_reason is ClosureReason.ABANDONED
@@ -221,28 +232,25 @@ async def test_a_turn_on_a_conversation_swept_meanwhile_is_told_it_closed(
 
 
 def test_a_summary_that_keeps_failing_is_recorded_and_not_requeued(
-    repository, notified, summary_llm, monkeypatch, caplog
+    repository, notified, queued, llm, caplog
 ):
     conversation = store(
         repository, idle=SUMMARY_GRACE + timedelta(minutes=1), claim=confirmed_claim()
     )
-    summary_llm.then(*[LLM_DOWN] * 4)
+    llm.then(*[LLM_DOWN] * 4)
 
     generate_claim_summary.apply(args=[str(conversation.id)])
 
-    assert len(summary_llm.requests) == 4  # the first attempt and three retries
+    assert len(llm.requests) == 4  # the first attempt and three retries
     assert async_to_sync(repository.get)(conversation.id).summary_failed
     assert any(r.levelname == "ERROR" and "summary" in r.message for r in caplog.records)
-    queued: list[str] = []
-    monkeypatch.setattr(tasks.generate_claim_summary, "delay", queued.append)
     assert queue_missing_summaries() == 0
+    assert queued == []
 
 
-def test_key_points_with_identifiers_nobody_gave_are_flagged(
-    repository, notified, summary_llm, caplog
-):
+def test_key_points_with_identifiers_nobody_gave_are_flagged(repository, notified, llm, caplog):
     conversation = store(repository, idle=timedelta(0), claim=confirmed_claim())
-    summary_llm.then(call(RECORD_KEY_POINTS, {"key_points": ["Choque con el 9999 ZZZ."]}))
+    llm.then(call(RECORD_KEY_POINTS, {"key_points": ["Choque con el 9999 ZZZ."]}))
 
     generate_claim_summary(str(conversation.id))
 

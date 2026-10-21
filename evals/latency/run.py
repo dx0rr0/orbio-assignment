@@ -5,8 +5,9 @@ consumer, with the real STT, LLM and TTS on OpenRouter (see docs/LATENCY.md).
     uv run ... python -m evals.latency.run --variant v1 --split train
     uv run ... python -m evals.latency.run --variant v1 --cases R05 R10 --reps 2
 
-The conversation each case starts from is put in an in-memory repository, so nothing touches
-the development database. Langfuse is off; everything is recorded under
+The consumer runs with the production services, except for the repository and the access
+tokens: the conversation each case starts from is put in memory, so nothing touches the
+development database. Langfuse is off; everything is recorded under
 `.claude/hillclimb/ttfa/<variant>/`: `results.jsonl` (one row per case and rep), `traces/`,
 `errors.jsonl` and `summary.json`.
 
@@ -19,15 +20,19 @@ import asyncio
 import base64
 import contextlib
 import hashlib
+import hmac
 import json
 import os
+import secrets
 import statistics
 import sys
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import httpx
 
@@ -36,7 +41,6 @@ os.environ.pop("LANGFUSE_PUBLIC_KEY", None)
 os.environ.setdefault("DJANGO_DEBUG", "true")
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "claims_service.settings")
 
-import openai
 from channels.testing import WebsocketCommunicator
 
 from claims_agent.adapters.memory import InMemoryConversationRepository
@@ -49,6 +53,7 @@ from claims_agent.domain import (
     apply_update,
     policy_number_to_look_up,
 )
+from claims_agent.ports import ChatModel, Completion
 from claims_agent.seed import seed_policies
 from evals.latency.cases import CASES, TEST_IDS, Case, read_back_text, resolve
 
@@ -71,26 +76,40 @@ class Meter:
     llm_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
-METER = Meter()
+class MeteredChatModel:
+    """The production chat model, timing each completion."""
+
+    def __init__(self, llm: ChatModel, meter: Meter) -> None:
+        self._llm = llm
+        self._meter = meter
+
+    async def complete(
+        self,
+        *,
+        system: str,
+        messages: Sequence[Message],
+        tools: Sequence[Mapping[str, Any]],
+    ) -> Completion:
+        started = time.perf_counter()
+        completion = await self._llm.complete(system=system, messages=messages, tools=tools)
+        self._meter.llm_calls.append({"latency_s": round(time.perf_counter() - started, 3)})
+        return completion
 
 
-class MeteredAsyncOpenAI(openai.AsyncOpenAI):
-    """The production client, timing each chat completion and keeping its usage."""
+class InMemoryAccess:
+    """Access tokens for the conversations in memory, checked as `intake.access` does."""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        create = self.chat.completions.create
+    def __init__(self) -> None:
+        self._tokens: dict[UUID, str] = {}
 
-        async def metered(*a: Any, **kw: Any) -> Any:
-            started = time.perf_counter()
-            response = await create(*a, **kw)
-            usage = response.usage.model_dump() if response.usage else {}
-            METER.llm_calls.append(
-                {"latency_s": round(time.perf_counter() - started, 3), "usage": usage}
-            )
-            return response
+    async def issue_token(self, conversation_id: UUID) -> str:
+        token = secrets.token_urlsafe(32)
+        self._tokens[conversation_id] = token
+        return token
 
-        self.chat.completions.create = metered  # type: ignore[method-assign]
+    async def is_authorized(self, conversation_id: UUID, token: str | None) -> bool:
+        stored = self._tokens.get(conversation_id)
+        return stored is not None and token is not None and hmac.compare_digest(stored, token)
 
 
 def key_usage() -> float:
@@ -158,17 +177,27 @@ def trace_of(conversation: Conversation) -> list[dict[str, Any]]:
     return turns
 
 
-async def run_case(
-    case: Case, repository: InMemoryConversationRepository, application: Any
-) -> dict[str, Any]:
+@dataclass(frozen=True)
+class Harness:
+    """The consumer's application and what the cases share with it."""
+
+    application: Any
+    repository: InMemoryConversationRepository
+    access: InMemoryAccess
+    meter: Meter
+
+
+async def run_case(case: Case, harness: Harness) -> dict[str, Any]:
     now = datetime.now(MADRID)
-    conversation = await repository.create(initial_conversation(case, now))
+    conversation = await harness.repository.create(initial_conversation(case, now))
+    token = await harness.access.issue_token(conversation.id)
     wav = (AUDIO / case.audio).read_bytes()
-    METER.llm_calls.clear()
+    meter = harness.meter
+    meter.llm_calls.clear()
 
     communicator = WebsocketCommunicator(
-        application,
-        f"/ws/conversations/{conversation.id}/?token=eval",
+        harness.application,
+        f"/ws/conversations/{conversation.id}/",
         headers=[(b"origin", b"http://localhost")],
     )
     marks: dict[str, float] = {}
@@ -178,7 +207,10 @@ async def run_case(
         connected, _ = await communicator.connect(timeout=CONNECT_TIMEOUT_S)
         if not connected:
             raise RuntimeError("websocket refused")
-        await communicator.receive_json_from(timeout=10)  # snapshot
+        await communicator.send_json_to({"type": "resume", "token": token})
+        snapshot = await communicator.receive_json_from(timeout=10)
+        if snapshot["type"] != "snapshot":
+            raise RuntimeError(f"resume refused: {snapshot}")
 
         started = time.perf_counter()
         await communicator.send_json_to({"type": "audio", "data": base64.b64encode(wav).decode()})
@@ -201,7 +233,7 @@ async def run_case(
         with contextlib.suppress(asyncio.CancelledError, TimeoutError):
             await communicator.disconnect()
 
-    after = await repository.get(conversation.id)
+    after = await harness.repository.get(conversation.id)
     checks = {name: bool(check(after.claim, replies, now)) for name, check in case.checks.items()}
     stt = marks.get("transcript", 0.0)
     engine_done = marks.get("bot_message", marks.get("claim_updated", stt))
@@ -218,12 +250,8 @@ async def run_case(
         "stt_s": stt,
         "engine_s": round(engine_done - stt, 3),
         "tts_first_s": round(marks["audio"] - engine_done, 3),
-        "llm_calls": len(METER.llm_calls),
-        "llm_s": round(sum(c["latency_s"] for c in METER.llm_calls), 3),
-        "usage": {
-            "input_tokens": sum(c["usage"].get("prompt_tokens", 0) for c in METER.llm_calls),
-            "output_tokens": sum(c["usage"].get("completion_tokens", 0) for c in METER.llm_calls),
-        },
+        "llm_calls": len(meter.llm_calls),
+        "llm_s": round(sum(c["latency_s"] for c in meter.llm_calls), 3),
         "replies": replies,
         "status": "ok",
         "_trace": trace_of(after),
@@ -238,24 +266,34 @@ def percentile(values: list[float], q: float) -> float:
     return ordered[min(len(ordered) - 1, round(q * (len(ordered) - 1)))]
 
 
+def build_harness() -> Harness:
+    """The consumer with the production services but for the repository and the access
+    tokens, which live in memory with the conversations."""
+    from claims_agent.engine import ConversationEngine
+    from claims_service.intake import services
+    from claims_service.intake.routing import websocket_application
+
+    repository = InMemoryConversationRepository(seed_policies(datetime.now(MADRID).date()))
+    access = InMemoryAccess()
+    meter = Meter()
+    telemetry = services.telemetry_from_settings()
+    llm = MeteredChatModel(services.chat_model_from_settings(), meter)
+    consumer_services = services.ConsumerServices(
+        engine=ConversationEngine(llm=llm, repository=repository, telemetry=telemetry),
+        voice=services.voice_from_settings(telemetry),
+        repository=repository,
+        telemetry=telemetry,
+        access=access,
+        request_summary=services.request_summary,
+    )
+    return Harness(websocket_application(consumer_services), repository, access, meter)
+
+
 async def run(variant: str, case_ids: list[str] | None, reps: int, split: str = "all") -> int:
     import django
 
     django.setup()
-    openai.AsyncOpenAI = MeteredAsyncOpenAI  # type: ignore[misc]
-
-    from claims_service.asgi import application
-    from claims_service.intake import access, services
-
-    repository = InMemoryConversationRepository(seed_policies(datetime.now(MADRID).date()))
-    services.repository = lambda: repository  # type: ignore[assignment]
-
-    # Access tokens live in Postgres, the conversations here in memory; checking one is part of
-    # connecting, not of the turn being measured.
-    async def authorized(conversation_id: Any, token: str | None) -> bool:
-        return True
-
-    access.is_authorized = authorized  # type: ignore[assignment]
+    harness = build_harness()
 
     cases = [
         c
@@ -283,7 +321,7 @@ async def run(variant: str, case_ids: list[str] | None, reps: int, split: str = 
                 print(f"budget stop: key usage ${before:.4f} >= ${BUDGET_STOP}")
                 return 3
             try:
-                row = await run_case(case, repository, application)
+                row = await run_case(case, harness)
             except Exception as error:  # recorded, never scored
                 with (out / "errors.jsonl").open("a", encoding="utf-8") as errors:
                     errors.write(
@@ -292,7 +330,7 @@ async def run(variant: str, case_ids: list[str] | None, reps: int, split: str = 
                                 "prompt_id": case.id,
                                 "rep": rep,
                                 "error": repr(error),
-                                "llm_calls": list(METER.llm_calls),
+                                "llm_calls": list(harness.meter.llm_calls),
                             },
                             ensure_ascii=False,
                         )

@@ -29,14 +29,14 @@ from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
 from claims_agent.engine import TurnResult, templates
 from claims_agent.ports import ConcurrentUpdateError, ConversationNotFoundError, Span
-from claims_service.intake import access, error_messages, services
+from claims_service.intake import error_messages
 from claims_service.intake.groups import group_name
 from claims_service.intake.presenters import (
     bot_message_event,
     claim_updated_event,
     conversation_view,
 )
-from claims_service.intake.tasks import generate_claim_summary
+from claims_service.intake.services import ConsumerServices
 
 # About a minute of 16 kHz mono 16-bit audio, base64-encoded.
 MAX_AUDIO_BASE64_CHARS = 3_000_000
@@ -44,8 +44,6 @@ MAX_AUDIO_BASE64_CHARS = 3_000_000
 MAX_TEXT_CHARS = 2_000
 NOT_FOUND_CLOSE_CODE = 4404
 INTERNAL_ERROR_CLOSE_CODE = 1011
-# Give up queueing the summary after about a second instead of kombu's default retries.
-SUMMARY_RETRY_POLICY = {"max_retries": 2, "interval_start": 0, "interval_step": 0.5}
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +55,10 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
     # The conversation a connection asked to resume, until its `resume` message arrives.
     _resume_id: UUID | None = None
     _resume_deadline: asyncio.Task[None] | None = None
+
+    def __init__(self, *args: Any, services: ConsumerServices, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._services = services
 
     async def connect(self) -> None:
         await self.accept()
@@ -71,8 +73,8 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         # The route's uuid converter already parsed it.
         conversation_id: UUID | None = self.scope["url_route"]["kwargs"].get("conversation_id")
         if conversation_id is None:
-            result = await services.engine().start()
-            token = await access.issue_token(result.conversation.id)
+            result = await self._services.engine.start()
+            token = await self._services.access.issue_token(result.conversation.id)
             await self._join(result.conversation.id)
             await self.send_json(
                 {
@@ -100,11 +102,13 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         is_resume = isinstance(content, dict) and content.get("type") == "resume"
         token = content.get("token") if is_resume else None
         # A wrong token gets the same answer as an unknown id.
-        if not isinstance(token, str) or not await access.is_authorized(conversation_id, token):
+        if not isinstance(token, str) or not await self._services.access.is_authorized(
+            conversation_id, token
+        ):
             await self.close(code=NOT_FOUND_CLOSE_CODE)
             return
         try:
-            conversation = await services.repository().get(conversation_id)
+            conversation = await self._services.repository.get(conversation_id)
         except ConversationNotFoundError:
             await self.close(code=NOT_FOUND_CLOSE_CODE)
             return
@@ -150,7 +154,7 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
                 if wav is None:
                     return
                 with self._trace("turn", input={"wav_bytes": len(wav)}) as trace:
-                    utterance = await services.voice().transcribe(wav)
+                    utterance = await self._services.voice.transcribe(wav)
                     await self.send_json({"type": "transcript", "text": utterance})
                     await self._turn(utterance, reply_audio=True, trace=trace)
             case _:
@@ -158,7 +162,7 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
 
     async def _turn(self, utterance: str, *, reply_audio: bool, trace: Span) -> None:
         try:
-            result = await services.engine().handle_text(self.conversation_id, utterance)
+            result = await self._services.engine.handle_text(self.conversation_id, utterance)
         except ConcurrentUpdateError:
             # Another turn of the same conversation (e.g. a second tab) saved first.
             await self.send_json(bot_message_event(templates.technical_problem()))
@@ -182,8 +186,8 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         # and `queue_missing_summaries` queues it later. Publishing is blocking I/O, so it runs
         # off the event loop, and not in the thread the async ORM shares with other turns.
         try:
-            await sync_to_async(generate_claim_summary.apply_async, thread_sensitive=False)(
-                args=[str(self.conversation_id)], retry_policy=SUMMARY_RETRY_POLICY
+            await sync_to_async(self._services.request_summary, thread_sensitive=False)(
+                str(self.conversation_id)
             )
         except Exception:
             logger.exception(
@@ -197,7 +201,9 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             self._resume_deadline = None
 
     def _trace(self, name: str, input: Any = None) -> AbstractContextManager[Span]:
-        return services.telemetry().trace(name, session_id=str(self.conversation_id), input=input)
+        return self._services.telemetry.trace(
+            name, session_id=str(self.conversation_id), input=input
+        )
 
     async def _join(self, conversation_id: UUID) -> None:
         self.conversation_id = conversation_id
@@ -208,7 +214,7 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             await self.send_json(bot_message_event(reply))
         await self.send_json(claim_updated_event(result.conversation))
         if reply_audio:
-            wav = await services.voice().speak(result.replies)
+            wav = await self._services.voice.speak(result.replies)
             if wav is not None:
                 data = base64.b64encode(wav).decode("ascii")
                 await self.send_json({"type": "audio", "mime": "audio/wav", "data": data})
