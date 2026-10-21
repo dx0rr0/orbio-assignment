@@ -67,6 +67,8 @@ class Conversation(BaseModel):
     # that data can be confirmed.
     read_back_fingerprint: str | None = None
     summary: ClaimSummary | None = None
+    # The summary task gave up after its retries: an adjuster has to write it.
+    summary_failed: bool = False
     created_at: AwareDatetime
     updated_at: AwareDatetime
     # Optimistic concurrency token, bumped by the repository on every save.

@@ -23,7 +23,7 @@ from claims_service.intake.tasks import (
     queue_missing_summaries,
     sweep_abandoned_conversations,
 )
-from tests.engine.fakes import call, say
+from tests.engine.fakes import LLM_DOWN, call, say
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -218,3 +218,33 @@ async def test_a_turn_on_a_conversation_swept_meanwhile_is_told_it_closed(
     assert claim.closure_reason is ClosureReason.ABANDONED
     assert [reply.text for reply in result.replies] == [templates.already_closed(claim).text]
     assert llm.requests == []
+
+
+def test_a_summary_that_keeps_failing_is_recorded_and_not_requeued(
+    repository, notified, summary_llm, monkeypatch, caplog
+):
+    conversation = store(
+        repository, idle=SUMMARY_GRACE + timedelta(minutes=1), claim=confirmed_claim()
+    )
+    summary_llm.then(*[LLM_DOWN] * 4)
+
+    generate_claim_summary.apply(args=[str(conversation.id)])
+
+    assert len(summary_llm.requests) == 4  # the first attempt and three retries
+    assert async_to_sync(repository.get)(conversation.id).summary_failed
+    assert any(r.levelname == "ERROR" and "summary" in r.message for r in caplog.records)
+    queued: list[str] = []
+    monkeypatch.setattr(tasks.generate_claim_summary, "delay", queued.append)
+    assert queue_missing_summaries() == 0
+
+
+def test_key_points_with_identifiers_nobody_gave_are_flagged(
+    repository, notified, summary_llm, caplog
+):
+    conversation = store(repository, idle=timedelta(0), claim=confirmed_claim())
+    summary_llm.then(call(RECORD_KEY_POINTS, {"key_points": ["Choque con el 9999 ZZZ."]}))
+
+    generate_claim_summary(str(conversation.id))
+
+    [warning] = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert "plate 9999ZZZ was never given" in warning.getMessage()

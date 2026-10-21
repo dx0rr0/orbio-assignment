@@ -5,13 +5,14 @@ from datetime import timedelta
 from uuid import UUID
 
 from asgiref.sync import async_to_sync
-from celery import shared_task
+from celery import Task, shared_task
 from channels.layers import get_channel_layer
 from django.utils import timezone
 
-from claims_agent.domain import ClaimStatus, ClosureReason, Conversation, close
+from claims_agent.domain import ClaimStatus, ClosureReason, Conversation, Role, close
+from claims_agent.engine.hallucinations import check_summary
 from claims_agent.engine.summary import SummaryError, summarize
-from claims_agent.ports import ConcurrentUpdateError
+from claims_agent.ports import ConcurrentUpdateError, Telemetry
 from claims_service.intake import services
 from claims_service.intake.groups import group_name
 from claims_service.intake.models import ConversationRecord
@@ -36,7 +37,32 @@ def _notify(conversation: Conversation) -> None:
     )
 
 
+class _SummaryTask(Task):
+    def on_failure(self, exc, task_id, args, kwargs, einfo) -> None:
+        """After the last retry: say so, and mark the conversation so that nobody waits for a
+        summary (nor `queue_missing_summaries` queues it again)."""
+        conversation_id = args[0]
+        logger.error(
+            "Claim summary failed after retries: %s",
+            exc,
+            extra={"conversation_id": conversation_id},
+        )
+        repository = DjangoConversationRepository()
+
+        async def mark_failed() -> None:
+            conversation = await repository.get(UUID(conversation_id))
+            await repository.save(conversation.model_copy(update={"summary_failed": True}))
+
+        try:
+            async_to_sync(mark_failed)()
+        except Exception:
+            logger.exception(
+                "Could not mark the summary as failed", extra={"conversation_id": conversation_id}
+            )
+
+
 @shared_task(
+    base=_SummaryTask,
     autoretry_for=(SummaryError, ConcurrentUpdateError),
     retry_backoff=5,
     max_retries=3,
@@ -52,6 +78,7 @@ def generate_claim_summary(conversation_id: str) -> None:
         if conversation.claim.status is not ClaimStatus.CONFIRMED or conversation.summary:
             return None
         summary = await summarize(llm, conversation)
+        _check_summary(summary.key_points, conversation, telemetry)
         return await repository.save(conversation.model_copy(update={"summary": summary}))
 
     try:
@@ -64,6 +91,25 @@ def generate_claim_summary(conversation_id: str) -> None:
     if conversation is not None:
         logger.info("Claim summary generated", extra={"conversation_id": conversation_id})
         _notify(conversation)
+
+
+def _check_summary(
+    key_points: tuple[str, ...], conversation: Conversation, telemetry: Telemetry
+) -> None:
+    """Like the turns' replies, the LLM-written key points are checked, never blocked."""
+    declarant_said = " ".join(
+        m.content for m in conversation.messages if m.role is Role.USER and m.content
+    )
+    findings = check_summary(key_points, conversation.claim, declarant_said)
+    telemetry.score(
+        "summary_hallucination_check", 0.0 if findings else 1.0, "; ".join(findings) or None
+    )
+    if findings:
+        logger.warning(
+            "Possible hallucination in the claim summary: %s",
+            "; ".join(findings),
+            extra={"conversation_id": str(conversation.id)},
+        )
 
 
 @shared_task
@@ -95,6 +141,7 @@ def queue_missing_summaries() -> int:
     lost = ConversationRecord.objects.filter(
         status=ClaimStatus.CONFIRMED.value,
         document__summary=None,
+        document__summary_failed=False,
         # A turn on a confirmed claim saves nothing, so this is when it was confirmed.
         updated_at__lt=now - SUMMARY_GRACE,
         updated_at__gte=now - SUMMARY_GIVE_UP_AFTER,
