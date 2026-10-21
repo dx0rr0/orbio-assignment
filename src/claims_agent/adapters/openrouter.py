@@ -19,6 +19,8 @@ TTS_VOICE = "Kore"
 # Gemini TTS only returns raw PCM: 16-bit mono at this rate.
 TTS_SAMPLE_RATE = 24_000
 TIMEOUT_SECONDS = 30.0
+# Per chat request; the engine also bounds the whole turn (TURN_DEADLINE_SECONDS).
+CHAT_TIMEOUT_SECONDS = 10.0
 
 
 def _to_openai(message: Message) -> dict[str, Any]:
@@ -58,7 +60,7 @@ class OpenRouterChatModel:
         cls, api_key: str, *, client_class: type[openai.AsyncOpenAI] = openai.AsyncOpenAI
     ) -> "OpenRouterChatModel":
         client = client_class(
-            api_key=api_key, base_url=BASE_URL, timeout=TIMEOUT_SECONDS, max_retries=0
+            api_key=api_key, base_url=BASE_URL, timeout=CHAT_TIMEOUT_SECONDS, max_retries=0
         )
         return cls(client)
 

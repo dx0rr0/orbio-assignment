@@ -58,6 +58,8 @@ MAX_REFUSALS = 2
 MAX_LLM_ROUNDS = 4
 # Waits between attempts of a failed LLM call; one more attempt than waits.
 LLM_RETRY_DELAYS = (0.5, 1.5)
+# Seconds the LLM part of a turn may take, retries included, before the agent apologises.
+TURN_DEADLINE_SECONDS = 25.0
 
 _WORD = re.compile(r"\w{2,}")
 
@@ -84,6 +86,8 @@ class _Turn:
     turn counts as one answer (one failed attempt, one refusal)."""
 
     now: datetime
+    # The conversation after the last completed tool round, kept if the turn runs out of time.
+    progress: Conversation | None = None
     failed_fields: set[str] = field(default_factory=set)
     refused_fields: set[str] = field(default_factory=set)
 
@@ -121,12 +125,14 @@ class ConversationEngine:
         telemetry: Telemetry | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(MADRID),
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        turn_deadline: float = TURN_DEADLINE_SECONDS,
     ) -> None:
         self._llm = llm
         self._repository = repository
         self._telemetry = telemetry or NullTelemetry()
         self._clock = clock
         self._sleep = sleep
+        self._turn_deadline = turn_deadline
 
     async def start(self) -> TurnResult:
         conversation, replies = _say(Conversation.start(self._clock()), templates.greeting())
@@ -188,9 +194,15 @@ class ConversationEngine:
     ) -> tuple[Conversation, tuple[BotMessage, ...]]:
         before = conversation.claim
         try:
-            conversation, llm_reply = await self._run_llm(conversation, turn)
-        except _LLMUnavailableError as error:
-            conversation, llm_reply = error.conversation, None
+            async with asyncio.timeout(self._turn_deadline):
+                conversation, llm_reply = await self._run_llm(conversation, turn)
+        except (_LLMUnavailableError, TimeoutError) as error:
+            if isinstance(error, TimeoutError):
+                logger.warning("LLM part of the turn exceeded %.0f s", self._turn_deadline)
+                conversation = turn.progress or conversation
+            else:
+                conversation = error.conversation
+            llm_reply = None
             streak = conversation.llm_failure_streak + 1
             conversation = conversation.model_copy(update={"llm_failure_streak": streak})
             if streak >= MAX_LLM_FAILURES and not conversation.claim.status.is_final:
@@ -266,6 +278,7 @@ class ConversationEngine:
                         content=json.dumps(result, ensure_ascii=False),
                     )
                 )
+            turn.progress = conversation
             if _needs_script(before, conversation.claim):
                 return conversation, None
 

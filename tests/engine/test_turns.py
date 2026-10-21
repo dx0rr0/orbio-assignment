@@ -1,7 +1,8 @@
+import asyncio
 import json
 
 from claims_agent.domain import ClaimStatus, ClosureReason, Role, close
-from claims_agent.engine import templates, tools
+from claims_agent.engine import ConversationEngine, templates, tools
 from claims_agent.engine.tools import CONFIRM_CLAIM, DECLARANT_REFUSES, UPDATE_CLAIM
 from claims_agent.engine.turns import MAX_LLM_FAILURES, MAX_REPEAT_REQUESTS
 from tests.engine.fakes import COMPLETE, IDENTIFICATION, LLM_DOWN, NEW_POLICY, call, calls, say
@@ -491,3 +492,36 @@ async def test_a_conversation_closed_while_the_turn_ran_is_announced_as_closed(
     claim = result.conversation.claim
     assert claim.status is ClaimStatus.INCOMPLETE
     assert texts(result) == [templates.already_closed(claim).text]
+
+
+async def test_a_turn_that_takes_too_long_apologises(llm, repository, conversation_id):
+    class HangingLLM:
+        async def complete(self, **request):
+            await asyncio.Event().wait()  # never answers
+
+    engine = ConversationEngine(llm=HangingLLM(), repository=repository, turn_deadline=0.05)
+
+    result = await engine.handle_text(conversation_id, "Hola, quiero dar un parte")
+
+    assert texts(result) == [templates.technical_problem().text]
+    assert result.conversation.llm_failure_streak == 1
+    stored = await repository.get(conversation_id)
+    assert "Hola, quiero dar un parte" in [m.content for m in stored.transcript]
+
+
+async def test_tool_results_survive_the_turn_deadline(llm, repository, conversation_id):
+    class SlowAfterTools:
+        calls = 0
+
+        async def complete(self, **request):
+            self.calls += 1
+            if self.calls == 1:
+                return call(UPDATE_CLAIM, IDENTIFICATION)
+            await asyncio.Event().wait()
+
+    engine = ConversationEngine(llm=SlowAfterTools(), repository=repository, turn_deadline=0.05)
+
+    result = await engine.handle_text(conversation_id, "AUT 48213907, 4721 KLM")
+
+    assert result.conversation.claim.policy_number == "AUT-48213907"
+    assert texts(result) == [templates.technical_problem().text]
