@@ -8,6 +8,7 @@ from claims_agent.engine.templates import (
     display_plate,
     format_loss_window,
     read_back,
+    read_back_changes,
     spoken_plate,
     spoken_policy_number,
     spoken_reference,
@@ -58,6 +59,58 @@ def test_read_back_ends_the_free_text_description_with_a_full_stop():
     )
     already_punctuated = claim.model_copy(update={"description": "Me dieron un golpe."})
     assert "golpe.\n" in read_back(already_punctuated).text
+
+
+def corrected(claim: Claim, update: dict) -> Claim:
+    return apply_update(claim, update, policy=HAPPY_POLICY, now=NOW).claim
+
+
+def test_after_a_correction_only_the_changed_field_is_read_back():
+    heard = corrected(Claim(), COMPLETE)
+    location = {"way": "A-3", "municipality": "Leganés", "province": "Madrid", "country": "España"}
+    claim = corrected(heard, {"loss_location": location})
+
+    assert read_back_changes(heard, claim).text == (
+        "He corregido este dato:\n"
+        "- Lugar: A-3, Leganés (Madrid).\n"
+        "Lo demás queda igual. ¿Es todo correcto?"
+    )
+
+
+def test_several_corrected_fields_are_read_back_in_the_claim_order():
+    heard = corrected(Claim(), COMPLETE)
+    claim = corrected(
+        heard,
+        {
+            "description": "Una piedra rompió el parabrisas",
+            "loss_window": {"start": "2026-10-19T20:00", "end": "2026-10-19T20:00"},
+        },
+    )
+
+    assert read_back_changes(heard, claim).text == (
+        "He corregido estos datos:\n"
+        "- Fecha y hora: el 19 de octubre de 2026 a las 20:00.\n"
+        "- Descripción: Una piedra rompió el parabrisas.\n"
+        "Lo demás queda igual. ¿Es todo correcto?"
+    )
+
+
+def test_a_corrected_identifier_is_spelled_out_for_speech():
+    heard = corrected(Claim(), COMPLETE)
+    claim = heard.model_copy(update={"plate": "4721KLN"})
+
+    message = read_back_changes(heard, claim)
+
+    assert "- Matrícula: 4721 KLN." in message.text
+    assert "Matrícula: 4 7 2 1, K L N." in message.spoken
+
+
+def test_a_correction_that_changes_nothing_says_so():
+    heard = corrected(Claim(), COMPLETE)
+
+    assert read_back_changes(heard, heard).text == (
+        "No ha cambiado ningún dato. ¿Es todo correcto?"
+    )
 
 
 def test_a_loss_abroad_is_stated_back_before_closing():

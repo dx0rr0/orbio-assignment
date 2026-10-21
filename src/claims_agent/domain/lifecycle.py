@@ -208,7 +208,7 @@ def _coverage_issue(claim: Claim, policy: Policy | None) -> ClosureReason | None
 
 def _next_status(claim: Claim, policy: Policy | None) -> Claim:
     """A correction while pending confirmation keeps the claim pending if it is still complete
-    (the caller reads it back again) and returns it to in_progress otherwise. A value that would
+    (the caller reads back what changed) and returns it to in_progress otherwise. A value that would
     leave the loss uncovered keeps the claim in_progress until the declarant confirms it
     (`confirm_value`) or corrects it."""
     if any(n >= MAX_FAILED_ATTEMPTS for n in claim.failed_attempts.values()):

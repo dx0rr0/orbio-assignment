@@ -13,6 +13,7 @@ from claims_agent.domain import (
     Claim,
     ClaimStatus,
     ClosureReason,
+    CompleteClaim,
     LossLocation,
     LossType,
     LossWindow,
@@ -198,6 +199,84 @@ def read_back(incomplete: Claim) -> BotMessage:
     question = "¿Es todo correcto?"
     text = "\n".join([intro, *(f"- {display}" for display, _ in lines), question])
     speech = " ".join([intro, *(speech or display for display, speech in lines), question])
+    return BotMessage(text, speech)
+
+
+def _field_lines(claim: CompleteClaim) -> list[tuple[tuple[str, ...], str, str | None]]:
+    """One (fields, display, speech) line per value the declarant could correct, in the claim
+    order; speech is None when it reads the same as the display."""
+    location = claim.loss_location
+    place = ", ".join(p for p in (location.way, location.municipality) if p)
+    driver = "el titular de la póliza" if claim.driver_is_policyholder else claim.driver_name
+    lines: list[tuple[tuple[str, ...], str, str | None]] = [
+        (
+            ("policy_number",),
+            f"Póliza: {claim.policy_number}.",
+            f"Póliza: {spoken_policy_number(claim.policy_number)}.",
+        ),
+        (
+            ("plate",),
+            f"Matrícula: {display_plate(claim.plate)}.",
+            f"Matrícula: {spoken_plate(claim.plate)}.",
+        ),
+        (("declarant_name",), f"Declarante: {claim.declarant_name}.", None),
+        (("driver_is_policyholder", "driver_name"), f"Conductor: {driver}.", None),
+        (("loss_type",), f"Tipo de siniestro: {LOSS_TYPE_NAMES[claim.loss_type]}.", None),
+        (("loss_window",), f"Fecha y hora: {format_loss_window(claim.loss_window)}.", None),
+        (("loss_location",), f"Lugar: {place} ({location.province}).", None),
+        (("description",), f"Descripción: {_sentence(claim.description)}", None),
+        (("injuries",), f"Heridos: {_yes_no(value=claim.injuries)}.", None),
+        (
+            ("vehicle_immobilized",),
+            f"Vehículo inmovilizado: {_yes_no(value=claim.vehicle_immobilized)}.",
+            None,
+        ),
+    ]
+    if claim.loss_type is LossType.COLLISION:
+        involved = ("other_vehicle_involved", "other_vehicle_plate")
+        if (plate := claim.other_vehicle_plate) is not None:
+            lines += [
+                (
+                    involved,
+                    f"Otro vehículo implicado, matrícula {display_plate(plate)}.",
+                    f"Otro vehículo implicado, matrícula {spoken_plate(plate)}.",
+                ),
+                (
+                    ("friendly_report_signed",),
+                    f"Parte amistoso firmado: {_yes_no(value=claim.friendly_report_signed)}.",
+                    None,
+                ),
+            ]
+        else:
+            lines.append((involved, "No hubo otro vehículo implicado.", None))
+    if claim.loss_type is LossType.THEFT:
+        lines.append(
+            (
+                ("police_report_filed",),
+                f"Denuncia presentada: {_yes_no(value=claim.police_report_filed)}.",
+                None,
+            )
+        )
+    return lines
+
+
+def read_back_changes(heard: Claim, incomplete: Claim) -> BotMessage:
+    """After a correction, only the values that differ from the claim the declarant last heard
+    read back, so the whole claim is not read again for one field. Raises
+    `IncompleteClaimError` if anything is missing."""
+    claim = incomplete.complete()
+    changed = [
+        (display, speech)
+        for fields, display, speech in _field_lines(claim)
+        if any(getattr(heard, field) != getattr(claim, field) for field in fields)
+    ]
+    question = "¿Es todo correcto?"
+    if not changed:
+        return BotMessage(f"No ha cambiado ningún dato. {question}")
+    intro = "He corregido este dato:" if len(changed) == 1 else "He corregido estos datos:"
+    outro = f"Lo demás queda igual. {question}"
+    text = "\n".join([intro, *(f"- {display}" for display, _ in changed), outro])
+    speech = " ".join([intro, *(speech or display for display, speech in changed), outro])
     return BotMessage(text, speech)
 
 

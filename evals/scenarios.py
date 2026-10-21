@@ -91,7 +91,7 @@ SCENARIOS: tuple[Scenario, ...] = (
             "calle, el municipio y el golpe; pero te equivocas y dices Getafe en vez de "
             "Leganés. No te das cuenta hasta que el "
             "asistente te lee todos los datos al final: entonces corriges que no fue en Getafe, "
-            "sino en Leganés, y cuando te los vuelve a leer, confirmas. La matrícula del otro "
+            "sino en Leganés, y cuando te confirme el cambio, confirmas. La matrícula del otro "
             "coche es 9132 JKL y firmasteis el parte amistoso. Nadie herido, el coche funciona."
         ),
         status=ClaimStatus.CONFIRMED,

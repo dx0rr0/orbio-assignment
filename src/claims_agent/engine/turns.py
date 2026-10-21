@@ -236,11 +236,13 @@ class ConversationEngine:
         if after.injuries and not before.injuries:
             replies.append(templates.emergency_advice())
         if _needs_script(before, after):
-            replies.append(await self._script(after))
+            replies.append(await self._script(after, heard=conversation.read_back_claim))
             if not after.status.is_final:
                 conversation = conversation.model_copy(
                     update={"read_back_fingerprint": after.fingerprint_to_confirm}
                 )
+            if after.status is ClaimStatus.PENDING_CONFIRMATION:
+                conversation = conversation.model_copy(update={"read_back_claim": after})
         elif llm_reply is not None:
             self._check_hallucinations(llm_reply, conversation)
             replies.append(BotMessage(llm_reply, scripted=False))
@@ -248,13 +250,16 @@ class ConversationEngine:
             replies.append(templates.technical_problem())
         return _say(conversation, *replies)
 
-    async def _script(self, claim: Claim) -> BotMessage:
+    async def _script(self, claim: Claim, *, heard: Claim | None) -> BotMessage:
+        """`heard` is the claim as last read back to the declarant, if it was."""
         if claim.status is ClaimStatus.CONFIRMED:
             if claim.reference is None:
                 raise ValueError("a confirmed claim always has a reference")
             return templates.confirmed(claim.reference)
         if claim.status is ClaimStatus.PENDING_CONFIRMATION:
-            return templates.read_back(claim)
+            if heard is None:
+                return templates.read_back(claim)
+            return templates.read_back_changes(heard, claim)
         if not claim.status.is_final:
             return templates.confirm_coverage_value(claim, await self._policy_of(claim))
         return templates.closed(claim, await self._policy_of(claim))

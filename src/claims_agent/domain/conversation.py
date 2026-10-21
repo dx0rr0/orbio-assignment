@@ -66,6 +66,8 @@ class Conversation(BaseModel):
     # `Claim.fingerprint_to_confirm` of what the declarant was last asked to confirm (the
     # read-back, or a value that leaves the loss uncovered): only that can be confirmed.
     read_back_fingerprint: str | None = None
+    # The claim as last read back: after a correction, only what differs from it is read.
+    read_back_claim: Claim | None = None
     summary: ClaimSummary | None = None
     # The summary task gave up after its retries: an adjuster has to write it.
     summary_failed: bool = False

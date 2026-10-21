@@ -204,16 +204,43 @@ async def test_confirming_an_incomplete_claim_is_refused(engine, llm, conversati
     assert result.conversation.claim.status is ClaimStatus.IN_PROGRESS
 
 
-async def test_correction_while_pending_is_read_back_again(engine, llm, conversation_id):
+async def test_a_correction_while_pending_reads_back_only_what_changed(
+    engine, llm, conversation_id
+):
     correction = {"loss_window": {"start": "2026-10-19T20:00", "end": "2026-10-19T20:00"}}
     llm.then(call(UPDATE_CLAIM, COMPLETE), call(UPDATE_CLAIM, correction))
-    await engine.handle_text(conversation_id, "Todos los datos")
+    heard = (await engine.handle_text(conversation_id, "Todos los datos")).conversation.claim
 
     result = await engine.handle_text(conversation_id, "No, fue a las ocho")
 
-    assert result.conversation.claim.status is ClaimStatus.PENDING_CONFIRMATION
+    claim = result.conversation.claim
+    assert claim.status is ClaimStatus.PENDING_CONFIRMATION
+    assert texts(result) == [templates.read_back_changes(heard, claim).text]
     assert "a las 20:00" in result.replies[0].text
-    assert result.replies[0].text.startswith("Le leo los datos")
+    assert result.conversation.read_back_claim == claim
+
+
+async def test_a_claim_completed_again_after_a_correction_reads_back_only_what_changed(
+    engine, llm, conversation_id
+):
+    # Another driver opens a required field: the claim goes back to in_progress.
+    llm.then(
+        call(UPDATE_CLAIM, COMPLETE),
+        call(UPDATE_CLAIM, {"driver_is_policyholder": False}),
+        say("¿Cómo se llama quien conducía?"),
+        call(UPDATE_CLAIM, {"driver_name": "Laura López"}),
+    )
+    heard = (await engine.handle_text(conversation_id, "Todos los datos")).conversation.claim
+    await engine.handle_text(conversation_id, "No conducía yo")
+
+    result = await engine.handle_text(conversation_id, "Laura López")
+
+    [reply] = texts(result)
+    assert reply == (
+        "He corregido este dato:\n- Conductor: Laura López.\nLo demás queda igual. "
+        "¿Es todo correcto?"
+    )
+    assert result.conversation.claim.data_fingerprint != heard.data_fingerprint
 
 
 async def test_completing_and_confirming_in_one_response_only_reads_back(
@@ -239,13 +266,13 @@ async def test_correcting_and_confirming_in_one_response_reads_back_again(
     llm.then(
         call(UPDATE_CLAIM, COMPLETE), calls(call(UPDATE_CLAIM, correction), call(CONFIRM_CLAIM))
     )
-    await engine.handle_text(conversation_id, "Todos los datos")
+    heard = (await engine.handle_text(conversation_id, "Todos los datos")).conversation.claim
 
     result = await engine.handle_text(conversation_id, "Fue a las ocho, confírmelo")
 
     claim = result.conversation.claim
     assert claim.status is ClaimStatus.PENDING_CONFIRMATION
-    assert texts(result) == [templates.read_back(claim).text]
+    assert texts(result) == [templates.read_back_changes(heard, claim).text]
 
 
 async def test_confirming_data_that_was_not_read_back_is_refused(
