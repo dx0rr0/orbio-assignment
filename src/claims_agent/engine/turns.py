@@ -61,7 +61,7 @@ LLM_RETRY_DELAYS = (0.5, 1.5)
 # Seconds the LLM part of a turn may take, retries included, before the agent apologises.
 TURN_DEADLINE_SECONDS = 25.0
 
-_WORD = re.compile(r"\w{2,}")
+_WORD = re.compile(r"\w")
 
 
 @dataclass(frozen=True)

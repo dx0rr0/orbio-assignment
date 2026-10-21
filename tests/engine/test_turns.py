@@ -525,3 +525,12 @@ async def test_tool_results_survive_the_turn_deadline(llm, repository, conversat
 
     assert result.conversation.claim.policy_number == "AUT-48213907"
     assert texts(result) == [templates.technical_problem().text]
+
+
+async def test_a_one_character_answer_reaches_the_llm(engine, llm, conversation_id):
+    llm.then(say("Gracias. ¿En qué municipio?"))
+
+    result = await engine.handle_text(conversation_id, "8")
+
+    assert texts(result) == ["Gracias. ¿En qué municipio?"]
+    assert result.conversation.unintelligible_streak == 0
