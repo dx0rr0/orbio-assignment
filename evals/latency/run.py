@@ -247,7 +247,7 @@ class Harness:
     repository: InMemoryConversationRepository
     access: InMemoryAccess
     meter: Meter
-    # The speech clients, closed at the end of the run.
+    # The provider clients, closed at the end of the run.
     resources: AsyncExitStack
 
 
@@ -365,7 +365,9 @@ def build_harness() -> Harness:
     resources = AsyncExitStack()
     # What production runs with when Langfuse is off, plus the speech failures.
     telemetry = SpeechTelemetry(meter)
-    llm = MeteredChatModel(services.chat_model_from_settings(), meter)
+    chat_model = services.chat_model_from_settings()
+    resources.push_async_callback(chat_model.aclose)
+    llm = MeteredChatModel(chat_model, meter)
     consumer_services = services.ConsumerServices(
         engine=ConversationEngine(llm=llm, repository=repository, telemetry=telemetry),
         voice=services.voice_from_settings(telemetry, resources),
