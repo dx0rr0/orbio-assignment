@@ -28,6 +28,7 @@ import statistics
 import sys
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -185,6 +186,8 @@ class Harness:
     repository: InMemoryConversationRepository
     access: InMemoryAccess
     meter: Meter
+    # The speech clients, closed at the end of the run.
+    resources: AsyncExitStack
 
 
 async def run_case(case: Case, harness: Harness) -> dict[str, Any]:
@@ -276,17 +279,19 @@ def build_harness() -> Harness:
     repository = InMemoryConversationRepository(seed_policies(datetime.now(MADRID).date()))
     access = InMemoryAccess()
     meter = Meter()
+    resources = AsyncExitStack()
     telemetry = services.telemetry_from_settings()
     llm = MeteredChatModel(services.chat_model_from_settings(), meter)
     consumer_services = services.ConsumerServices(
         engine=ConversationEngine(llm=llm, repository=repository, telemetry=telemetry),
-        voice=services.voice_from_settings(telemetry),
+        voice=services.voice_from_settings(telemetry, resources),
         repository=repository,
         telemetry=telemetry,
         access=access,
         request_summary=services.request_summary,
     )
-    return Harness(websocket_application(consumer_services), repository, access, meter)
+    application = websocket_application(consumer_services)
+    return Harness(application, repository, access, meter, resources)
 
 
 async def run(variant: str, case_ids: list[str] | None, reps: int, split: str = "all") -> int:
@@ -294,7 +299,13 @@ async def run(variant: str, case_ids: list[str] | None, reps: int, split: str = 
 
     django.setup()
     harness = build_harness()
+    async with harness.resources:
+        return await run_cases(harness, variant, case_ids, reps, split)
 
+
+async def run_cases(
+    harness: Harness, variant: str, case_ids: list[str] | None, reps: int, split: str
+) -> int:
     cases = [
         c
         for c in CASES

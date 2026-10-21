@@ -1,7 +1,11 @@
 import httpx
 import pytest
 
-from claims_agent.adapters.openrouter import BASE_URL, OpenRouterSpeechToText
+from claims_agent.adapters.openrouter import (
+    BASE_URL,
+    OpenRouterSpeechToText,
+    OpenRouterTextToSpeech,
+)
 from claims_agent.ports import SpeechError
 
 
@@ -12,3 +16,12 @@ async def test_a_provider_error_keeps_the_reason_from_the_response_body():
 
     with pytest.raises(SpeechError, match=r"402.*at least \$0\.50 in balance"):
         await OpenRouterSpeechToText("key", client).transcribe(b"RIFF")
+
+
+async def test_the_adapter_keeps_its_client_open_until_closed():
+    client = httpx.AsyncClient(base_url=BASE_URL)
+
+    async with OpenRouterTextToSpeech("key", client):
+        assert not client.is_closed
+
+    assert client.is_closed

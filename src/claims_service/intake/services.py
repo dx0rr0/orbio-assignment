@@ -3,7 +3,8 @@ worker process (`for_tasks`) build their dependencies here once and hand them in
 evals build their own, with fakes."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from contextlib import AsyncExitStack
+from dataclasses import dataclass, field
 from typing import Protocol
 from uuid import UUID
 
@@ -44,6 +45,12 @@ class ConsumerServices:
     access: ConversationAccess
     # Queues the summary of a confirmed claim. It publishes to the broker, so it blocks.
     request_summary: Callable[[str], None]
+    # What the adapters hold open (the speech clients), closed by `aclose`.
+    resources: AsyncExitStack = field(default_factory=AsyncExitStack)
+
+    async def aclose(self) -> None:
+        """At shutdown (the ASGI lifespan's, see `routing.lifespan_application`)."""
+        await self.resources.aclose()
 
 
 def telemetry_from_settings() -> Telemetry:
@@ -67,12 +74,13 @@ def chat_model_from_settings() -> OpenRouterChatModel:
     return OpenRouterChatModel.create(settings.OPENROUTER_API_KEY, client_class=client_class)
 
 
-def voice_from_settings(telemetry: Telemetry) -> Voice:
-    return Voice(
-        OpenRouterSpeechToText(settings.OPENROUTER_API_KEY),
-        OpenRouterTextToSpeech(settings.OPENROUTER_API_KEY),
-        telemetry,
-    )
+def voice_from_settings(telemetry: Telemetry, resources: AsyncExitStack) -> Voice:
+    """One pooled client per adapter for the whole process, closed with `resources`."""
+    stt = OpenRouterSpeechToText(settings.OPENROUTER_API_KEY)
+    resources.push_async_callback(stt.aclose)
+    tts = OpenRouterTextToSpeech(settings.OPENROUTER_API_KEY)
+    resources.push_async_callback(tts.aclose)
+    return Voice(stt, tts, telemetry)
 
 
 def request_summary(conversation_id: str) -> None:
@@ -84,15 +92,17 @@ def request_summary(conversation_id: str) -> None:
 def for_consumer() -> ConsumerServices:
     repository = DjangoConversationRepository()
     telemetry = telemetry_from_settings()
+    resources = AsyncExitStack()
     return ConsumerServices(
         engine=ConversationEngine(
             llm=chat_model_from_settings(), repository=repository, telemetry=telemetry
         ),
-        voice=voice_from_settings(telemetry),
+        voice=voice_from_settings(telemetry, resources),
         repository=repository,
         telemetry=telemetry,
         access=access,
         request_summary=request_summary,
+        resources=resources,
     )
 
 

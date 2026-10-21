@@ -3,7 +3,7 @@
 import io
 import wave
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Self
 
 import httpx
 import openai
@@ -116,9 +116,21 @@ class OpenRouterChatModel:
 
 
 class _OpenRouterAudio:
+    """Keeps one pooled client for its lifetime, so turns reuse its connections (no new TLS
+    handshake per request); `aclose` closes it, a client passed in too."""
+
     def __init__(self, api_key: str, client: httpx.AsyncClient | None = None) -> None:
         self._client = client or httpx.AsyncClient(base_url=BASE_URL, timeout=TIMEOUT_SECONDS)
         self._headers = {"Authorization": f"Bearer {api_key}"}
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.aclose()
 
     async def _post(self, path: str, **kwargs: Any) -> httpx.Response:
         try:

@@ -1,4 +1,7 @@
-"""WebSocket routes, around the services the consumer runs with."""
+"""WebSocket routes and the server's lifespan, around the services the consumer runs with."""
+
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from channels.routing import URLRouter
 from channels.security.websocket import AllowedHostsOriginValidator, OriginValidator
@@ -19,3 +22,25 @@ def websocket_application(services: ConsumerServices) -> OriginValidator:
             ]
         )
     )
+
+
+Receive = Callable[[], Awaitable[dict[str, Any]]]
+Send = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+def lifespan_application(
+    services: ConsumerServices,
+) -> Callable[[dict[str, Any], Receive, Send], Awaitable[None]]:
+    """Closes the services when the server shuts down (the ASGI lifespan protocol)."""
+
+    async def application(scope: dict[str, Any], receive: Receive, send: Send) -> None:
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                await services.aclose()
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+    return application
