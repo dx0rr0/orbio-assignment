@@ -1,6 +1,8 @@
 """Django service tests: real Postgres (from docker compose), in-memory channel layer, and
 scripted fakes for the LLM and speech providers."""
 
+from collections.abc import AsyncIterator
+
 import pytest
 from asgiref.sync import sync_to_async
 from django.db import connections
@@ -29,15 +31,24 @@ class FakeSpeechToText:
 
 
 class FakeTextToSpeech:
+    """Each text is spoken as `FAKE_PCM`, in one piece unless `pieces` says otherwise."""
+
+    sample_rate = 24_000
+
     def __init__(self) -> None:
         self.fail = False
         self.spoken: list[str] = []
+        self.pieces: list[bytes] = [FAKE_PCM]
 
-    async def synthesize(self, text: str) -> bytes:
+    async def stream(self, text: str) -> AsyncIterator[bytes]:
         if self.fail:
             raise SpeechError("TTS down")
         self.spoken.append(text)
-        return b"RIFF-fake-wav"
+        for piece in self.pieces:
+            yield piece
+
+
+FAKE_PCM = b"pcm-fake"
 
 
 @pytest.fixture(autouse=True)

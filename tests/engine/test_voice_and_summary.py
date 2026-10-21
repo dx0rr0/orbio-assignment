@@ -1,3 +1,7 @@
+import asyncio
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
+
 import pytest
 
 from claims_agent.domain import (
@@ -12,28 +16,39 @@ from claims_agent.domain import (
 from claims_agent.engine import BotMessage, Voice
 from claims_agent.engine.summary import RECORD_KEY_POINTS, SummaryError, summarize
 from claims_agent.engine.tools import CONFIRM_CLAIM, UPDATE_CLAIM
-from claims_agent.engine.voice import speech_chunks
-from claims_agent.ports import SpeechError
+from claims_agent.engine.voice import MIN_PIECE_SECONDS, speech_chunks
+from claims_agent.ports import NullTelemetry, Span, SpeechError
 from tests.engine.fakes import COMPLETE, LLM_DOWN, NOW, call, say
 
 # --- voice --------------------------------------------------------------------------------
 
 
 class Speech:
+    """Speech-to-text and text-to-speech fakes. A text's speech is yielded as the pieces in
+    `pieces` (one 2-byte piece per text by default), then `fail` raises if set."""
+
+    sample_rate = 24_000
+
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.texts: list[str] = []
+        self.pieces: dict[str, list[bytes]] = {}
 
     async def transcribe(self, wav: bytes) -> str:
         if self.fail:
             raise SpeechError("down")
         return "  hola  "
 
-    async def synthesize(self, text: str) -> bytes:
+    async def stream(self, text: str) -> AsyncIterator[bytes]:
+        self.texts.append(text)
+        for piece in self.pieces.get(text, [b"pc"]):
+            yield piece
         if self.fail:
             raise SpeechError("down")
-        self.texts.append(text)
-        return b"wav"
+
+
+async def spoken(audio: AsyncIterator[bytes]) -> list[bytes]:
+    return [piece async for piece in audio]
 
 
 async def test_transcription_is_stripped():
@@ -44,16 +59,48 @@ async def test_failed_transcription_becomes_an_empty_utterance():
     assert await Voice(Speech(fail=True), Speech()).transcribe(b"x") == ""
 
 
-async def test_all_replies_of_a_turn_are_spoken_once_using_their_speech_text():
+async def test_all_replies_of_a_turn_are_spoken_at_once_using_their_speech_text():
     tts = Speech()
     replies = [BotMessage("Uno."), BotMessage("Póliza AUT-1", speech="Póliza A U T, 1")]
 
-    assert await Voice(Speech(), tts).speak(replies) == b"wav"
+    assert await spoken(Voice(Speech(), tts).speak(replies)) == [b"pc"]
     assert tts.texts == ["Uno. Póliza A U T, 1"]
 
 
 async def test_failed_synthesis_gives_no_audio():
-    assert await Voice(Speech(), Speech(fail=True)).speak([BotMessage("Hola")]) is None
+    assert await spoken(Voice(Speech(), Speech(fail=True)).speak([BotMessage("Hola")])) == []
+    assert await spoken(Voice(Speech(), Speech()).speak([])) == []
+
+
+async def test_speech_is_sent_in_pieces_of_whole_samples_of_a_minimum_length():
+    tts = Speech()
+    voice = Voice(Speech(), tts)
+    least = voice.min_piece_bytes
+    # Pieces as the provider sends them: any size, cut in the middle of a sample.
+    tts.pieces["Hola."] = [b"a" * 3, b"b" * (least - 4), b"c" * 5, b"d" * 3]
+
+    pieces = await spoken(voice.speak([BotMessage("Hola.")]))
+
+    assert [len(piece) for piece in pieces] == [least + 4, 2]
+    assert b"".join(pieces) == (b"a" * 3 + b"b" * (least - 4) + b"c" * 5 + b"d" * 3)[:-1]
+    assert least == round(24_000 * MIN_PIECE_SECONDS) * 2
+
+
+async def test_a_piece_is_sent_before_its_sentence_is_fully_synthesized():
+    more = asyncio.Event()
+
+    class Slow(Speech):
+        async def stream(self, text: str) -> AsyncIterator[bytes]:
+            yield b"x" * 100_000
+            await more.wait()
+            yield b"y" * 2
+
+    audio = Voice(Speech(), Slow()).speak([BotMessage("Hola.")])
+    first = await asyncio.wait_for(anext(audio), timeout=1)
+    more.set()
+
+    assert first == b"x" * 100_000
+    assert await spoken(audio) == [b"y" * 2]
 
 
 # --- speech by sentence -------------------------------------------------------------------
@@ -82,30 +129,72 @@ def test_times_and_spelled_identifiers_are_not_cut():
     ]
 
 
-async def test_replies_are_spoken_by_sentence_in_order():
+FIRST = "Si hay alguien herido, llame al 112."
+SECOND = "¿Dónde ocurrió el siniestro?"
+
+
+async def test_sentences_are_synthesized_at_once_and_spoken_in_order():
+    second_done = asyncio.Event()
+
+    class SecondFirst(Speech):
+        """The second sentence ends first; the first waits for it."""
+
+        async def stream(self, text: str) -> AsyncIterator[bytes]:
+            if text == FIRST:
+                yield b"1a"
+                await second_done.wait()
+                yield b"1b"
+            else:
+                yield b"2a"
+                second_done.set()
+
+    voice = Voice(Speech(), SecondFirst())
+    audio = voice.speak_in_chunks([BotMessage(FIRST), BotMessage(SECOND)])
+
+    # Pieces shorter than the minimum are sent together at the end of their sentence.
+    assert await asyncio.wait_for(spoken(audio), timeout=1) == [b"1a1b", b"2a"]
+
+
+async def test_failed_synthesis_ends_the_speech_there():
+    tts = Speech(fail=True)
+    voice = Voice(Speech(), tts)
+    tts.pieces[FIRST] = [b"1" * voice.min_piece_bytes, b"lost"]
+
+    pieces = await spoken(voice.speak_in_chunks([BotMessage(FIRST), BotMessage(SECOND)]))
+
+    assert pieces == [b"1" * voice.min_piece_bytes]
+
+
+class SpanUpdates(NullTelemetry):
+    """Records what each span is updated with (the latency eval reads TTS errors there)."""
+
+    def __init__(self) -> None:
+        self.updates: list[tuple[str, object, object]] = []
+
+    @contextmanager
+    def span(self, name: str, *, input: object = None) -> Iterator[Span]:
+        updates = self.updates
+
+        class Recorded:
+            def update(self, *, output: object = None, metadata: object = None) -> None:
+                updates.append((name, output, metadata))
+
+        yield Recorded()
+
+
+async def test_synthesis_is_recorded_in_its_span_failures_too():
+    telemetry = SpanUpdates()
     tts = Speech()
-    replies = [
-        BotMessage("Si hay alguien herido, llame al 112."),
-        BotMessage("¿Dónde ocurrió el siniestro?"),
+    tts.pieces["Hola."] = [b"ab", b"cd"]
+
+    await spoken(Voice(Speech(), tts, telemetry).speak([BotMessage("Hola.")]))
+    tts.fail = True
+    await spoken(Voice(Speech(), tts, telemetry).speak([BotMessage("Hola.")]))
+
+    assert telemetry.updates == [
+        ("tts", {"pcm_bytes": 4}, None),
+        ("tts", None, {"error": "down"}),
     ]
-
-    chunks = [wav async for wav in Voice(Speech(), tts).speak_in_chunks(replies)]
-
-    assert chunks == [b"wav", b"wav"]
-    assert sorted(tts.texts) == sorted(
-        ["Si hay alguien herido, llame al 112.", "¿Dónde ocurrió el siniestro?"]
-    )
-
-
-async def test_failed_synthesis_ends_the_spoken_chunks():
-    chunks = [
-        wav
-        async for wav in Voice(Speech(), Speech(fail=True)).speak_in_chunks(
-            [BotMessage("Hola, buenas tardes.")]
-        )
-    ]
-
-    assert chunks == []
 
 
 # --- turn result --------------------------------------------------------------------------

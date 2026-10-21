@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from typing import Protocol
 
 
@@ -12,6 +13,12 @@ class SpeechToText(Protocol):
 
 
 class TextToSpeech(Protocol):
-    async def synthesize(self, text: str) -> bytes:
-        """Spanish speech for `text`, as a WAV file. Raises `SpeechError`."""
+    # Of the audio `stream` yields: raw PCM, 16-bit little-endian mono at this rate.
+    @property
+    def sample_rate(self) -> int: ...
+
+    def stream(self, text: str) -> AsyncIterator[bytes]:
+        """Spanish speech for `text`, yielded as it arrives from the provider, in pieces of
+        any size (a piece may even end in the middle of a sample). Raises `SpeechError`, also
+        after some pieces were yielded."""
         ...
