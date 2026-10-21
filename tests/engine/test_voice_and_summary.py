@@ -44,6 +44,18 @@ async def test_failed_transcription_becomes_an_empty_utterance():
     assert await Voice(Speech(fail=True), Speech()).transcribe(b"x") == ""
 
 
+async def test_a_part_of_an_utterance_that_fails_to_transcribe_is_none():
+    assert await Voice(Speech(fail=True), Speech()).transcribe_part(b"x") is None
+
+
+def test_the_parts_of_an_utterance_are_joined_skipping_silent_ones():
+    assert Voice.join_parts(["Hola,", "", "quiero dar un parte"]) == "Hola, quiero dar un parte"
+
+
+def test_an_utterance_with_a_failed_part_is_empty():
+    assert Voice.join_parts(["Hola,", None]) == ""
+
+
 async def test_all_replies_of_a_turn_are_spoken_once_using_their_speech_text():
     tts = Speech()
     replies = [BotMessage("Uno."), BotMessage("Póliza AUT-1", speech="Póliza A U T, 1")]

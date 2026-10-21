@@ -45,15 +45,28 @@ class Voice:
 
     async def transcribe(self, wav: bytes) -> str:
         """The transcription, or "" if it failed (the engine then asks to repeat)."""
+        return await self.transcribe_part(wav) or ""
+
+    async def transcribe_part(self, wav: bytes) -> str | None:
+        """The transcription of `wav`, a whole utterance or a part of one, or None if it failed.
+        A silent part transcribes to ""."""
         with self._telemetry.span("stt", input={"wav_bytes": len(wav)}) as span:
             try:
                 text = (await self._stt.transcribe(wav)).strip()
             except SpeechError as error:
                 logger.exception("Transcription failed")
                 span.update(metadata={"error": str(error)})
-                return ""
+                return None
             span.update(output=text)
             return text
+
+    @staticmethod
+    def join_parts(parts: Sequence[str | None]) -> str:
+        """The utterance spoken in `parts`, in order; "" if any part failed, since half an
+        utterance could be taken for all of it."""
+        if None in parts:
+            return ""
+        return " ".join(part for part in parts if part)
 
     async def speak(self, replies: Sequence[BotMessage]) -> bytes | None:
         """One WAV with all the replies of a turn, or None if synthesis failed."""

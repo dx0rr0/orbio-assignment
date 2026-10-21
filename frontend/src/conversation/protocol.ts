@@ -81,4 +81,5 @@ export function parseServerEvent(data: unknown): ServerEvent | null {
 export type ClientMessage =
   | { type: 'resume'; token: string }
   | { type: 'audio'; data: string }
+  | { type: 'audio_chunk'; data: string; final: boolean }
   | { type: 'text'; text: string; reply_audio: boolean }

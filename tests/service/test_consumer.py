@@ -106,6 +106,80 @@ async def test_audio_turn_sends_the_transcript_then_the_spoken_reply(application
     await communicator.disconnect()
 
 
+def chunk(data: bytes, *, final: bool) -> dict:
+    return {"type": "audio_chunk", "data": base64.b64encode(data).decode(), "final": final}
+
+
+async def test_an_utterance_in_chunks_is_transcribed_while_it_is_still_being_spoken(
+    application, llm, stt, tts
+):
+    communicator, _ = await started_conversation(application)
+    stt.transcripts += ["Hola, quiero", "dar un parte"]
+    llm.then(say("¿Me indica su número de póliza?"))
+
+    await communicator.send_json_to(chunk(b"RIFF-first", final=False))
+    await asyncio.wait_for(stt.has_heard.wait(), timeout=5)
+    assert stt.heard == [b"RIFF-first"]
+    assert await communicator.receive_nothing()  # no turn until the last chunk
+
+    await communicator.send_json_to(chunk(b"RIFF-last", final=True))
+    events = await receive_until(communicator, "audio")
+
+    assert [e["type"] for e in events] == ["transcript", "bot_message", "claim_updated", "audio"]
+    assert events[0]["text"] == "Hola, quiero dar un parte"
+    assert llm.requests[-1]["messages"][-1].content == "Hola, quiero dar un parte"
+    await communicator.disconnect()
+
+
+async def test_a_chunk_that_fails_to_transcribe_asks_to_repeat_the_whole_utterance(
+    application, llm, stt
+):
+    # Half an utterance could be taken for all of it ("no" of "no lo sé").
+    communicator, _ = await started_conversation(application)
+    stt.transcripts += ["Hola, quiero", SpeechError("STT down")]
+
+    await communicator.send_json_to(chunk(b"RIFF-first", final=False))
+    await communicator.send_json_to(chunk(b"RIFF-last", final=True))
+    events = await receive_until(communicator, "audio")
+
+    assert events[0] == {"type": "transcript", "text": ""}
+    assert events[1]["text"] == templates.ask_to_repeat().text
+    assert llm.requests == []
+    await communicator.disconnect()
+
+
+async def test_the_chunks_of_an_utterance_share_its_length_limit(application, llm, stt):
+    communicator, _ = await started_conversation(application)
+    stt.transcripts += ["uno", "dos"]
+    half = "A" * (consumers.MAX_AUDIO_BASE64_CHARS // 2 + 4)
+
+    await communicator.send_json_to({"type": "audio_chunk", "data": half, "final": False})
+    await communicator.send_json_to({"type": "audio_chunk", "data": half, "final": True})
+    event = await communicator.receive_json_from(timeout=5)
+
+    assert event["type"] == "error"
+    assert "demasiado largo" in event["message"]
+    assert llm.requests == []
+    await communicator.disconnect()
+
+
+async def test_another_message_drops_the_parts_of_an_unfinished_utterance(
+    application, llm, stt, tts
+):
+    communicator, _ = await started_conversation(application)
+    stt.transcripts += ["Hola, quiero", "Mi póliza es AUT-48213907"]
+    llm.then(say("¿Algo más?"), say("¿Y la matrícula?"))
+
+    await communicator.send_json_to(chunk(b"RIFF-abandoned", final=False))
+    await communicator.send_json_to({"type": "text", "text": "Hola"})
+    await receive_until(communicator, "claim_updated")
+    await communicator.send_json_to(chunk(b"RIFF-new", final=True))
+    events = await receive_until(communicator, "audio")
+
+    assert events[0]["text"] == "Mi póliza es AUT-48213907"
+    await communicator.disconnect()
+
+
 async def test_a_reply_is_spoken_by_sentence_as_each_one_is_ready(application, llm, tts):
     communicator, _ = await started_conversation(application)
     llm.then(say("Gracias por la información. ¿Me indica su número de póliza?"))
@@ -159,6 +233,11 @@ async def test_failed_synthesis_still_sends_the_text(application, llm, tts):
         ({"type": "text"}, "No se ha podido leer el mensaje"),
         ({"type": "text", "text": "a" * (consumers.MAX_TEXT_CHARS + 1)}, "demasiado largo"),
         ({"type": "audio", "data": "not base64!"}, "No se ha podido leer el audio"),
+        (
+            {"type": "audio_chunk", "data": "not base64!", "final": True},
+            "No se ha podido leer el audio",
+        ),
+        ({"type": "audio_chunk", "data": "UklGRg==", "final": "yes"}, "No se ha podido leer"),
         (
             {"type": "audio", "data": "A" * (consumers.MAX_AUDIO_BASE64_CHARS + 1)},
             "demasiado largo",
