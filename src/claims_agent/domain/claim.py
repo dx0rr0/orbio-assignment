@@ -40,6 +40,15 @@ class ClosureReason(StrEnum):
     OUTSIDE_SPAIN = "outside_spain"
 
 
+# The field whose value raises each coverage issue, and the status the claim closes in once the
+# declarant confirms that value.
+COVERAGE_ISSUES: dict[ClosureReason, tuple[str, ClaimStatus]] = {
+    ClosureReason.OUTSIDE_SPAIN: ("loss_location", ClaimStatus.NOT_COVERED),
+    ClosureReason.OUTSIDE_COVERAGE_PERIOD: ("loss_window", ClaimStatus.NOT_COVERED),
+    ClosureReason.PARTIAL_COVERAGE: ("loss_window", ClaimStatus.ESCALATED),
+}
+
+
 class Urgency(StrEnum):
     HIGH = "high"
     MEDIUM = "medium"
@@ -102,6 +111,8 @@ class Claim(BaseModel):
     field_errors: dict[str, str] = {}
     failed_attempts: dict[str, int] = {}
     closure_reason: ClosureReason | None = None
+    # A value that would leave the loss uncovered, waiting for the declarant to confirm it.
+    coverage_issue: ClosureReason | None = None
     pending_fields: tuple[PendingField, ...] = ()
     reference: str | None = None
 
@@ -127,6 +138,20 @@ class Claim(BaseModel):
         """Changes whenever a field value changes, and only then."""
         data = self.model_dump_json(include=set(CLAIM_FIELDS))
         return hashlib.sha256(data.encode()).hexdigest()
+
+    @property
+    def value_to_confirm(self) -> str | None:
+        """The field the declarant must confirm before the claim closes over its coverage."""
+        return COVERAGE_ISSUES[self.coverage_issue][0] if self.coverage_issue else None
+
+    @property
+    def fingerprint_to_confirm(self) -> str:
+        """What the declarant is asked to confirm next: the flagged value if there is one,
+        otherwise the whole claim (the read-back)."""
+        if self.value_to_confirm is None:
+            return self.data_fingerprint
+        value = self.model_dump_json(include={"coverage_issue", self.value_to_confirm})
+        return hashlib.sha256(value.encode()).hexdigest()
 
     @property
     def urgency(self) -> Urgency | None:

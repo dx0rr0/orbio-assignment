@@ -28,6 +28,7 @@ from claims_agent.domain import (
     apply_update,
     close,
     confirm,
+    confirm_value,
     format_reference,
     identified_policy,
     policy_number_to_look_up,
@@ -110,6 +111,8 @@ def _needs_script(before: Claim, after: Claim) -> bool:
     """Whether the claim changed in a way only a template may announce."""
     if after.status.is_final:
         return True
+    if after.coverage_issue is not None:
+        return before.fingerprint_to_confirm != after.fingerprint_to_confirm
     return after.status is ClaimStatus.PENDING_CONFIRMATION and (
         before.status is not ClaimStatus.PENDING_CONFIRMATION
         or before.data_fingerprint != after.data_fingerprint
@@ -217,9 +220,9 @@ class ConversationEngine:
             replies.append(templates.emergency_advice())
         if _needs_script(before, after):
             replies.append(await self._script(after))
-            if after.status is ClaimStatus.PENDING_CONFIRMATION:
+            if not after.status.is_final:
                 conversation = conversation.model_copy(
-                    update={"read_back_fingerprint": after.data_fingerprint}
+                    update={"read_back_fingerprint": after.fingerprint_to_confirm}
                 )
         elif llm_reply is not None:
             self._check_hallucinations(llm_reply, conversation)
@@ -234,6 +237,8 @@ class ConversationEngine:
             return templates.confirmed(claim.reference)
         if claim.status is ClaimStatus.PENDING_CONFIRMATION:
             return templates.read_back(claim)
+        if not claim.status.is_final:
+            return templates.confirm_coverage_value(claim, await self._policy_of(claim))
         return templates.closed(claim, await self._policy_of(claim))
 
     async def _policy_of(self, claim: Claim) -> Policy | None:
@@ -320,6 +325,8 @@ class ConversationEngine:
                 return await self._update_claim(conversation, arguments, turn)
             case tools.CONFIRM_CLAIM:
                 return await self._confirm_claim(conversation, turn.now)
+            case tools.CONFIRM_VALUE:
+                return self._confirm_value(conversation)
             case tools.DECLARANT_REFUSES:
                 return self._declarant_refuses(conversation, arguments, turn)
             case _:
@@ -361,6 +368,15 @@ class ConversationEngine:
         year = now.astimezone(MADRID).year
         sequence = await self._repository.next_reference_sequence(year)
         claim = confirm(claim, format_reference(year, sequence))
+        return conversation.model_copy(update={"claim": claim}), {"status": claim.status.value}
+
+    def _confirm_value(self, conversation: Conversation) -> tuple[Conversation, Mapping[str, Any]]:
+        claim = conversation.claim
+        if claim.coverage_issue is None:
+            return conversation, {"error": "no value is waiting for confirmation"}
+        if conversation.read_back_fingerprint != claim.fingerprint_to_confirm:
+            return conversation, {"error": "the declarant has not been asked about it yet"}
+        claim = confirm_value(claim)
         return conversation.model_copy(update={"claim": claim}), {"status": claim.status.value}
 
     def _declarant_refuses(

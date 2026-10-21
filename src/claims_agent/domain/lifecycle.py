@@ -11,6 +11,7 @@ from typing import Any
 
 from claims_agent.domain.claim import (
     CLAIM_FIELDS,
+    COVERAGE_ISSUES,
     Claim,
     ClaimStatus,
     ClosureReason,
@@ -193,21 +194,41 @@ def identified_policy(claim: Claim, policy: Policy | None) -> Policy | None:
     return policy
 
 
-def _next_status(claim: Claim, policy: Policy | None) -> Claim:
-    """A correction while pending confirmation keeps the claim pending if it is still complete
-    (the caller reads it back again) and returns it to in_progress otherwise."""
+def _coverage_issue(claim: Claim, policy: Policy | None) -> ClosureReason | None:
     if claim.loss_location is not None and not claim.loss_location.in_spain:
-        return close(claim, ClaimStatus.NOT_COVERED, ClosureReason.OUTSIDE_SPAIN)
+        return ClosureReason.OUTSIDE_SPAIN
     if claim.loss_window is not None and policy is not None:
         match coverage(claim.loss_window, policy):
             case Coverage.NOT_COVERED:
-                return close(claim, ClaimStatus.NOT_COVERED, ClosureReason.OUTSIDE_COVERAGE_PERIOD)
+                return ClosureReason.OUTSIDE_COVERAGE_PERIOD
             case Coverage.PARTIAL:
-                return close(claim, ClaimStatus.ESCALATED, ClosureReason.PARTIAL_COVERAGE)
+                return ClosureReason.PARTIAL_COVERAGE
+    return None
+
+
+def _next_status(claim: Claim, policy: Policy | None) -> Claim:
+    """A correction while pending confirmation keeps the claim pending if it is still complete
+    (the caller reads it back again) and returns it to in_progress otherwise. A value that would
+    leave the loss uncovered keeps the claim in_progress until the declarant confirms it
+    (`confirm_value`) or corrects it."""
     if any(n >= MAX_FAILED_ATTEMPTS for n in claim.failed_attempts.values()):
         return close(claim, ClaimStatus.ESCALATED, ClosureReason.RETRIES_EXHAUSTED)
-    status = ClaimStatus.IN_PROGRESS if claim.missing_fields else ClaimStatus.PENDING_CONFIRMATION
-    return claim.model_copy(update={"status": status})
+    issue = _coverage_issue(claim, policy)
+    if issue is not None:
+        status = ClaimStatus.IN_PROGRESS
+    else:
+        status = (
+            ClaimStatus.IN_PROGRESS if claim.missing_fields else ClaimStatus.PENDING_CONFIRMATION
+        )
+    return claim.model_copy(update={"status": status, "coverage_issue": issue})
+
+
+def confirm_value(claim: Claim) -> Claim:
+    """The declarant confirmed the value that leaves the loss uncovered: the claim closes."""
+    if claim.status.is_final or claim.coverage_issue is None:
+        raise InvalidTransitionError("there is no value waiting for confirmation")
+    _, status = COVERAGE_ISSUES[claim.coverage_issue]
+    return close(claim, status, claim.coverage_issue)
 
 
 def close(claim: Claim, status: ClaimStatus, reason: ClosureReason) -> Claim:

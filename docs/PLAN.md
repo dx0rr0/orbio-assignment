@@ -18,7 +18,7 @@ Agreed scope for v0 of the auto claim intake voice agent. Vocabulary follows [GL
     - `theft`: `police_report_filed` (bool).
   - **Urgency** (`high | medium | low`): derived by deterministic code from `injuries` and `vehicle_immobilized`, never asked.
 - **Claim status**: `in_progress → pending_confirmation → confirmed`. A correction during confirmation keeps the claim `pending_confirmation` (and the bot reads it back again) if it is still complete, or returns it to `in_progress` if the correction opens a new required field. Other final statuses: `incomplete`, `not_covered` and `escalated`, each storing a `closure_reason` (`data_refused | abandoned | retries_exhausted | system_error | outside_coverage_period | partial_coverage | outside_spain`) plus `pending_fields` (each with its last validation error). Partially collected data is kept.
-- **Coverage**: loss window entirely within the coverage period → continue; entirely outside → `not_covered`; partly outside → `escalated`.
+- **Coverage**: loss window entirely within the coverage period → continue; entirely outside → `not_covered`; partly outside → `escalated`. Same for a location outside Spain (`not_covered`). Since the value may be misheard or a date wrongly resolved, the claim does not close right away: it stays `in_progress`, a template states the value (and the coverage period) and asks the declarant to confirm it; the claim closes only once they confirm it, and a correction re-evaluates it.
 - **Closing**: the bot reads the claim back and the declarant confirms. The claim gets reference `SIN-<year>-<6-digit sequence>`, read aloud, and a Celery task generates the structured summary (key points, urgency, next steps).
 - **Errors and edge cases**
 
@@ -26,7 +26,7 @@ Agreed scope for v0 of the auto claim intake voice agent. Vocabulary follows [GL
   |---|---|
   | Empty or unintelligible transcription | Ask to repeat without calling the LLM, with a retry limit |
   | Invalid field (unknown policy, future date, plate mismatch) | Validator returns a specific error; the LLM explains it and asks again. 3 failures on the same field → `escalated` |
-  | Loss outside the coverage period | Explain and close as `not_covered` |
+  | Loss outside the coverage period | State the date and the coverage period, ask to confirm; close as `not_covered` once confirmed, continue if corrected |
   | Injuries | Recommend calling 112, then continue |
   | Off-topic | Short answer, back to the interview |
   | Declarant refuses a required field | Explain why it's needed; if they insist, close as `incomplete` |

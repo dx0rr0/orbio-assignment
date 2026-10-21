@@ -2,6 +2,7 @@ from datetime import datetime
 
 from claims_agent.domain import MADRID, Claim, LossWindow, apply_update
 from claims_agent.engine.templates import (
+    confirm_coverage_value,
     display_plate,
     format_loss_window,
     read_back,
@@ -55,3 +56,13 @@ def test_read_back_ends_the_free_text_description_with_a_full_stop():
     )
     already_punctuated = claim.model_copy(update={"description": "Me dieron un golpe."})
     assert "golpe.\n" in read_back(already_punctuated).text
+
+
+def test_a_loss_abroad_is_stated_back_before_closing():
+    abroad = {"municipality": "Oporto", "province": "Porto", "country": "Portugal"}
+    claim = apply_update(Claim(), {"loss_location": abroad}, policy=None, now=NOW).claim
+
+    text = confirm_coverage_value(claim, None).text
+
+    assert "Oporto (Portugal)" in text
+    assert "¿Es correcto el lugar?" in text

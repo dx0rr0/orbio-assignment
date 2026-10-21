@@ -16,6 +16,7 @@ from claims_agent.domain import (
     apply_update,
     close,
     confirm,
+    confirm_value,
     policy_number_to_look_up,
 )
 
@@ -158,44 +159,86 @@ def test_correction_that_opens_a_new_required_field_goes_back_to_in_progress():
     assert claim.missing_fields == ("police_report_filed",)
 
 
-def test_loss_abroad_is_not_covered():
-    claim = update(
-        loss_location={"municipality": "Oporto", "province": "Porto", "country": "Portugal"}
-    ).claim
+ABROAD = {"municipality": "Oporto", "province": "Porto", "country": "Portugal"}
+LAST_YEAR = {"start": "2025-06-01T10:00"}
+
+
+# A value that would leave the loss uncovered may be a mishearing or a wrongly resolved date, so
+# the claim only closes once the declarant confirms it (B4).
+
+
+def test_loss_abroad_is_flagged_and_not_covered_once_confirmed():
+    claim = update(loss_location=ABROAD).claim
+    assert claim.status is ClaimStatus.IN_PROGRESS
+    assert claim.coverage_issue is ClosureReason.OUTSIDE_SPAIN
+    assert claim.value_to_confirm == "loss_location"
+
+    claim = confirm_value(claim)
     assert claim.status is ClaimStatus.NOT_COVERED
     assert claim.closure_reason is ClosureReason.OUTSIDE_SPAIN
 
 
-def test_loss_outside_the_coverage_period_is_not_covered():
-    claim = update(**IDENTIFIED, loss_window={"start": "2025-06-01T10:00"}).claim
+def test_loss_outside_the_coverage_period_is_not_covered_once_confirmed():
+    claim = update(**IDENTIFIED, loss_window=LAST_YEAR).claim
+    assert claim.status is ClaimStatus.IN_PROGRESS
+    assert claim.coverage_issue is ClosureReason.OUTSIDE_COVERAGE_PERIOD
+    assert claim.value_to_confirm == "loss_window"
+
+    claim = confirm_value(claim)
     assert claim.status is ClaimStatus.NOT_COVERED
     assert claim.closure_reason is ClosureReason.OUTSIDE_COVERAGE_PERIOD
 
 
-def test_coverage_is_checked_when_the_policy_arrives_after_the_window():
-    claim = update(policy=None, loss_window={"start": "2025-06-01T10:00"}).claim
+def test_correcting_a_flagged_value_reopens_the_flow():
+    claim = update(**IDENTIFIED, loss_window=LAST_YEAR).claim
+    claim = update(claim, loss_window={"start": "2026-10-19T08:00"}).claim
     assert claim.status is ClaimStatus.IN_PROGRESS
+    assert claim.coverage_issue is None
+    claim = update(claim, loss_location=ABROAD).claim
+    claim = update(
+        claim,
+        loss_location={"municipality": "Oporto", "province": "Pontevedra", "country": "España"},
+    ).claim
+    assert claim.coverage_issue is None
+
+
+def test_a_complete_claim_with_a_flagged_value_is_not_read_back():
+    claim = update(complete_claim(), loss_window=LAST_YEAR).claim
+    assert claim.status is ClaimStatus.IN_PROGRESS
+    assert claim.coverage_issue is ClosureReason.OUTSIDE_COVERAGE_PERIOD
+
+
+def test_a_value_can_only_be_confirmed_while_one_is_flagged():
+    with pytest.raises(InvalidTransitionError):
+        confirm_value(update(**IDENTIFIED).claim)
+
+
+def test_coverage_is_checked_when_the_policy_arrives_after_the_window():
+    claim = update(policy=None, loss_window=LAST_YEAR).claim
+    assert claim.coverage_issue is None
     claim = update(claim, **IDENTIFIED).claim
-    assert claim.status is ClaimStatus.NOT_COVERED
+    assert claim.coverage_issue is ClosureReason.OUTSIDE_COVERAGE_PERIOD
 
 
 def test_coverage_is_not_checked_until_the_plate_matches_the_policy():
     # The coverage period is policy data: it says nothing until the declarant is identified.
-    window = {"start": "2025-06-01T10:00"}
-    claim = update(policy_number="AUT-00000001", plate="9999 ZZZ", loss_window=window).claim
-    assert claim.status is ClaimStatus.IN_PROGRESS
-    claim = update(policy_number="AUT-00000001", loss_window=window).claim
-    assert claim.status is ClaimStatus.IN_PROGRESS
+    claim = update(policy_number="AUT-00000001", plate="9999 ZZZ", loss_window=LAST_YEAR).claim
+    assert claim.coverage_issue is None
+    claim = update(policy_number="AUT-00000001", loss_window=LAST_YEAR).claim
+    assert claim.coverage_issue is None
     claim = update(claim, plate="1234 BCD").claim
-    assert claim.status is ClaimStatus.NOT_COVERED
+    assert claim.coverage_issue is ClosureReason.OUTSIDE_COVERAGE_PERIOD
 
 
-def test_window_partly_outside_the_coverage_period_is_escalated():
+def test_window_partly_outside_the_coverage_period_is_escalated_once_confirmed():
     claim = update(
         **IDENTIFIED,
         loss_type="theft",
         loss_window={"start": "2025-12-31T20:00", "end": "2026-01-01T09:00"},
     ).claim
+    assert claim.coverage_issue is ClosureReason.PARTIAL_COVERAGE
+
+    claim = confirm_value(claim)
     assert claim.status is ClaimStatus.ESCALATED
     assert claim.closure_reason is ClosureReason.PARTIAL_COVERAGE
 
@@ -212,9 +255,7 @@ def test_repeated_failures_on_a_field_escalate_the_claim():
 
 
 def test_closed_claim_cannot_be_updated():
-    claim = update(
-        loss_location={"municipality": "Oporto", "province": "Porto", "country": "Portugal"}
-    ).claim
+    claim = confirm_value(update(loss_location=ABROAD).claim)
     with pytest.raises(ClaimClosedError):
         update(claim, injuries=False)
 

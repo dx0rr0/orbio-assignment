@@ -3,7 +3,7 @@ import json
 
 from claims_agent.domain import ClaimStatus, ClosureReason, Role, close
 from claims_agent.engine import ConversationEngine, templates, tools
-from claims_agent.engine.tools import CONFIRM_CLAIM, DECLARANT_REFUSES, UPDATE_CLAIM
+from claims_agent.engine.tools import CONFIRM_CLAIM, CONFIRM_VALUE, DECLARANT_REFUSES, UPDATE_CLAIM
 from claims_agent.engine.turns import MAX_LLM_FAILURES, MAX_REPEAT_REQUESTS
 from tests.engine.fakes import COMPLETE, IDENTIFICATION, LLM_DOWN, NEW_POLICY, call, calls, say
 
@@ -222,27 +222,76 @@ async def test_no_answer_to_the_read_back_lets_the_llm_ask_what_to_change(
 # --- closing by code ----------------------------------------------------------------------
 
 
-async def test_loss_outside_the_coverage_period_is_closed_with_a_template(
+LAST_WEEK = {
+    "policy_number": NEW_POLICY.number,
+    "plate": NEW_POLICY.plate,
+    "loss_window": {"start": "2026-10-13T22:00", "end": "2026-10-14T08:00"},
+}
+
+
+async def test_a_value_outside_the_coverage_period_is_stated_back_for_confirmation(
     engine, llm, conversation_id
 ):
-    llm.then(
-        call(
-            UPDATE_CLAIM,
-            {
-                "policy_number": NEW_POLICY.number,
-                "plate": NEW_POLICY.plate,
-                "loss_window": {"start": "2026-10-13T22:00", "end": "2026-10-14T08:00"},
-            },
-        )
-    )
+    llm.then(call(UPDATE_CLAIM, LAST_WEEK))
 
     result = await engine.handle_text(conversation_id, "Me robaron el coche la semana pasada")
+
+    claim = result.conversation.claim
+    assert claim.status is ClaimStatus.IN_PROGRESS
+    assert claim.coverage_issue is ClosureReason.OUTSIDE_COVERAGE_PERIOD
+    assert len(llm.requests) == 1  # the question is a template
+    assert texts(result) == [templates.confirm_coverage_value(claim, NEW_POLICY).text]
+    assert "13 de octubre de 2026" in result.replies[0].text
+    assert "17 de octubre de 2026" in result.replies[0].text
+
+
+async def test_a_confirmed_value_outside_the_coverage_period_closes_the_claim(
+    engine, llm, conversation_id
+):
+    llm.then(call(UPDATE_CLAIM, LAST_WEEK), call(CONFIRM_VALUE))
+    await engine.handle_text(conversation_id, "Me robaron el coche la semana pasada")
+
+    result = await engine.handle_text(conversation_id, "Sí, fue el martes 13")
 
     claim = result.conversation.claim
     assert claim.status is ClaimStatus.NOT_COVERED
     assert claim.closure_reason is ClosureReason.OUTSIDE_COVERAGE_PERIOD
     assert texts(result) == [templates.closed(claim, NEW_POLICY).text]
-    assert "17 de octubre de 2026" in result.replies[0].text
+
+
+async def test_a_corrected_value_reopens_the_flow(engine, llm, conversation_id):
+    correction = {"loss_window": {"start": "2026-10-19T22:00", "end": "2026-10-20T08:00"}}
+    llm.then(
+        call(UPDATE_CLAIM, LAST_WEEK),
+        call(UPDATE_CLAIM, correction),
+        say("Gracias. ¿Cómo se llama?"),
+    )
+    await engine.handle_text(conversation_id, "Me robaron el coche la semana pasada")
+
+    result = await engine.handle_text(conversation_id, "No, perdone, fue anoche")
+
+    claim = result.conversation.claim
+    assert claim.status is ClaimStatus.IN_PROGRESS
+    assert claim.coverage_issue is None
+    assert texts(result) == ["Gracias. ¿Cómo se llama?"]
+
+
+async def test_a_value_cannot_be_confirmed_in_the_response_that_flags_it(
+    engine, llm, conversation_id
+):
+    llm.then(calls(call(UPDATE_CLAIM, LAST_WEEK), call(CONFIRM_VALUE)))
+
+    result = await engine.handle_text(conversation_id, "La semana pasada, y sí, es correcto")
+
+    assert result.conversation.claim.status is ClaimStatus.IN_PROGRESS
+
+
+async def test_confirming_a_value_when_none_is_flagged_is_refused(engine, llm, conversation_id):
+    llm.then(call(CONFIRM_VALUE), say("¿Me indica su número de póliza?"))
+
+    await engine.handle_text(conversation_id, "Sí")
+
+    assert "error" in tool_results(llm.requests[1])[0]
 
 
 async def test_second_refusal_closes_the_claim_as_incomplete(engine, llm, conversation_id):
