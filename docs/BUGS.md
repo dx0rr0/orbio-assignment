@@ -41,8 +41,8 @@ Ground rules for whoever fixes them:
 
 ### B4. An irreversible `not_covered` is decided on an unconfirmed value
 
-- [ ] Fixed
-- **Status (2026-10-21):** waiting for the product decision. Recommendation: option (a). The claim stays `in_progress` with the offending field marked; a template states the value and the policy dates ("Me indica que ocurrió el 13 de octubre, y su póliza empezó el 17. ¿Es correcta la fecha?"); the claim closes only when the declarant confirms that value, and a correction re-evaluates it. Option (b) makes the declarant finish the whole interview before hearing the loss isn't covered.
+- [x] Fixed in 2fc2357
+- **Status (2026-10-21):** option (a), approved. Applies to the three coverage closures (outside Spain, outside the coverage period, partly outside); the LLM reports the confirmation with a new `declarant_confirms_value` tool.
 - **Where:** `src/claims_agent/domain/lifecycle.py` (`_next_status`, around lines 180–187).
 - **Trigger:** the LLM resolves "el martes pasado" to the wrong year, or the STT mishears the municipality as one abroad. The claim jumps straight to `not_covered`, a final status, and the declarant can't correct it.
 - **Expected:** the declarant gets a chance to correct the value that makes the claim not covered before it closes.
@@ -123,8 +123,8 @@ Ground rules for whoever fixes them:
 
 ### S1. No authentication on conversations
 
-- [ ] Fixed
-- **Status (2026-10-21):** waiting for the product decision. Recommendation: serve the listing only when `DEBUG` is on (no Django auth in v0); issue a random token with `conversation_started`, store only its hash on the conversation, and require it to resume over WebSocket and on `GET /api/conversations/<id>`; the frontend keeps it in `sessionStorage` next to `?conversation=`. Open question: may resuming from another browser or device stop working?
+- [x] Fixed in 86e2cbb
+- **Status (2026-10-21):** done as proposed and approved: listing only in DEBUG; per-conversation token (hash stored) required on the WebSocket (`?token=`) and the API (`Authorization: Bearer`); kept in `sessionStorage`, so resuming from another browser is not possible.
 - **Where:** `src/claims_service/intake/api.py` (around lines 24–35); `src/claims_service/intake/consumers.py` (around lines 57–63).
 - **Problem:** the API lists every conversation with personal data (names, plates, transcripts). With those ids anyone can connect to `/ws/conversations/<id>/` and inject turns into someone else's conversation.
 - **Fix for v0:** remove or protect the listing endpoint (staff-only via Django auth, or a setting that disables it outside debug). Issue an unguessable per-conversation token when the conversation is created, and require it on the WebSocket. Document real authentication as an improvement.
