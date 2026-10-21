@@ -164,8 +164,8 @@ Ground rules for whoever fixes them:
 
 ### T2. Fragile e2e wait
 
-- [ ] Fixed
-- **Status (2026-10-21):** deferred: the audio events of a turn change with the voice pipeline redesign.
+- [x] Fixed in ac464f9
+- **Status (2026-10-21):** after the voice redesign a reply's speech comes in several `audio` / `audio_continued` pieces; the server now ends every spoken turn with `audio_end`, and the e2e waits for it. Checked with the consumer tests; the e2e itself was not rerun (it calls the paid STT and TTS).
 - **Where:** `tests/e2e/test_voice_scenarios.py` (`turn()`, around line 34).
 - **Problem:** it always waits for an `audio` event, so a TTS failure becomes a 90 s timeout instead of a clear failure.
 - **Fix:** wait for the end-of-turn event and assert on the audio separately.
