@@ -1,6 +1,6 @@
 import json
 
-from claims_agent.domain import ClaimStatus, ClosureReason, Role
+from claims_agent.domain import ClaimStatus, ClosureReason, Role, close
 from claims_agent.engine import templates, tools
 from claims_agent.engine.tools import CONFIRM_CLAIM, DECLARANT_REFUSES, UPDATE_CLAIM
 from claims_agent.engine.turns import MAX_LLM_FAILURES, MAX_REPEAT_REQUESTS
@@ -470,3 +470,24 @@ async def test_two_refusals_in_one_response_count_once(engine, llm, conversation
     assert result.conversation.claim.status is ClaimStatus.IN_PROGRESS
     assert result.conversation.refusals == {"declarant_name": 1}
     assert texts(result) == ["Lo necesito para tramitar el parte. ¿Me lo dice?"]
+
+
+async def test_a_conversation_closed_while_the_turn_ran_is_announced_as_closed(
+    engine, llm, repository, conversation_id
+):
+    scripted_complete = llm.complete
+
+    async def closed_meanwhile(**request):
+        stored = await repository.get(conversation_id)
+        claim = close(stored.claim, ClaimStatus.INCOMPLETE, ClosureReason.ABANDONED)
+        await repository.save(stored.model_copy(update={"claim": claim}))
+        return await scripted_complete(**request)
+
+    llm.complete = closed_meanwhile
+    llm.then(say("¿Me indica su número de póliza?"))
+
+    result = await engine.handle_text(conversation_id, "Hola")
+
+    claim = result.conversation.claim
+    assert claim.status is ClaimStatus.INCOMPLETE
+    assert texts(result) == [templates.already_closed(claim).text]

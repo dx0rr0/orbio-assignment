@@ -44,7 +44,7 @@ browser ──WAV 16 kHz──▶ WebSocket consumer ──▶ STT ──▶ eng
 
 **Packages.** `domain/` is pure (claim model, validators, lifecycle, coverage, provinces) and imports nothing else. `engine/` (turn loop, prompts, tools, templates, voice, summary) depends only on `domain/` and `ports/` (async interfaces for the LLM, speech, storage and telemetry). `adapters/` implements the ports for OpenRouter, Langfuse and in-memory storage. The Django project `claims_service/` stays at the edge: ORM repository, ninja API, Channels consumer and Celery tasks.
 
-**Stateless servers.** A turn loads the conversation, processes it and saves it with an optimistic version check, so any process can serve any turn. The abandonment sweep uses the same conditional update, which means a turn that lands mid-sweep wins. Claim references come from an atomic Postgres upsert.
+**Stateless servers.** A turn loads the conversation, processes it and saves it with an optimistic version check, so any process can serve any turn. A turn marks the conversation as active (a versioned save) before it calls the LLM, so the abandonment sweep, which closes with the same conditional update, skips a conversation that is receiving a turn; if the sweep closed it first, the turn tells the declarant the conversation is closed. Claim references come from an atomic Postgres upsert.
 
 **Failure handling.** An empty or unintelligible transcription is answered without calling the LLM. LLM errors are retried with backoff; if they persist, the agent apologises and keeps the conversation, and three failed turns in a row escalate it. Invalid tool calls go back to the LLM as errors. A failed transcription counts as unintelligible, and a failed synthesis falls back to a text-only reply.
 

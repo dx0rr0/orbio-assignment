@@ -76,7 +76,8 @@ def sweep_abandoned_conversations() -> int:
         conversation = to_conversation(record)
         claim = close(conversation.claim, ClaimStatus.INCOMPLETE, ClosureReason.ABANDONED)
         try:
-            # A conditional UPDATE on the version: a turn that lands meanwhile wins.
+            # A conditional UPDATE on the version: a turn that saved since (it marks the
+            # conversation active before calling the LLM) wins.
             saved = async_to_sync(repository.save)(conversation.model_copy(update={"claim": claim}))
         except ConcurrentUpdateError:
             continue

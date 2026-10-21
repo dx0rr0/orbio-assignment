@@ -39,6 +39,7 @@ from claims_agent.engine.templates import BotMessage
 from claims_agent.ports import (
     ChatModel,
     Completion,
+    ConcurrentUpdateError,
     ConversationRepository,
     LLMError,
     NullTelemetry,
@@ -132,14 +133,24 @@ class ConversationEngine:
         return TurnResult(await self._repository.create(conversation), replies)
 
     async def handle_text(self, conversation_id: UUID, utterance: str) -> TurnResult:
+        now = self._clock()
         conversation = await self._repository.get(conversation_id)
+        if not conversation.claim.status.is_final:
+            # Mark the activity before the slow part of the turn, so that the abandonment
+            # sweep leaves the conversation alone while the turn is being processed.
+            try:
+                conversation = await self._repository.save(
+                    conversation.model_copy(update={"updated_at": now})
+                )
+            except ConcurrentUpdateError:
+                # Saved meanwhile, e.g. closed by the sweep right after we loaded it.
+                conversation = await self._repository.get(conversation_id)
         if conversation.claim.status.is_final:
             status = conversation.claim.status
             reply = templates.already_closed(conversation.claim)
             return TurnResult(conversation, (reply,), previous_status=status)
 
         previous_status = conversation.claim.status
-        now = self._clock()
         if is_unintelligible(utterance):
             conversation, replies = self._unintelligible(conversation)
         else:
@@ -148,7 +159,15 @@ class ConversationEngine:
             conversation, replies = await self._converse(conversation, _Turn(now))
 
         conversation = conversation.model_copy(update={"updated_at": now})
-        saved = await self._repository.save(conversation)
+        try:
+            saved = await self._repository.save(conversation)
+        except ConcurrentUpdateError:
+            stored = await self._repository.get(conversation_id)
+            if not stored.claim.status.is_final:
+                raise
+            # Closed by someone else while this turn ran: that is what the declarant must hear.
+            reply = templates.already_closed(stored.claim)
+            return TurnResult(stored, (reply,), previous_status=stored.claim.status)
         return TurnResult(saved, replies, previous_status=previous_status)
 
     # --- turn kinds -----------------------------------------------------------------------

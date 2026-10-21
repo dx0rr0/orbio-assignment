@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 import pytest
-from asgiref.sync import async_to_sync
+from asgiref.sync import async_to_sync, sync_to_async
 from django.utils import timezone
 
 from claims_agent.domain import (
@@ -11,6 +11,7 @@ from claims_agent.domain import (
     Conversation,
     PendingField,
 )
+from claims_agent.engine import templates
 from claims_agent.engine.summary import RECORD_KEY_POINTS
 from claims_service.intake import services, tasks
 from claims_service.intake.repository import DjangoConversationRepository
@@ -22,7 +23,7 @@ from claims_service.intake.tasks import (
     queue_missing_summaries,
     sweep_abandoned_conversations,
 )
-from tests.engine.fakes import call
+from tests.engine.fakes import call, say
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -166,3 +167,54 @@ def test_confirmed_claims_whose_summary_was_never_queued_are_queued(repository, 
     assert queue_missing_summaries() == 1
 
     assert queued == [str(lost.id)]
+
+
+# --- sweep and turns ----------------------------------------------------------------------
+
+
+async def idle_conversation(repository) -> Conversation:
+    last_activity = timezone.now() - ABANDONED_AFTER - timedelta(minutes=1)
+    conversation = Conversation(created_at=last_activity, updated_at=last_activity)
+    return await repository.create(conversation)
+
+
+async def test_a_conversation_receiving_a_turn_is_not_swept(repository, llm, notified):
+    idle = await idle_conversation(repository)
+    swept: list[int] = []
+    scripted_complete = llm.complete
+
+    async def slow_complete(**request):
+        # The sweep runs while the LLM is thinking.
+        swept.append(await sync_to_async(sweep_abandoned_conversations)())
+        return await scripted_complete(**request)
+
+    llm.complete = slow_complete
+    llm.then(say("¿Me indica su número de póliza?"))
+
+    result = await services.engine().handle_text(idle.id, "Hola, quiero dar un parte")
+
+    assert swept == [0]
+    assert result.conversation.claim.status is ClaimStatus.IN_PROGRESS
+    assert [reply.text for reply in result.replies] == ["¿Me indica su número de póliza?"]
+
+
+async def test_a_turn_on_a_conversation_swept_meanwhile_is_told_it_closed(
+    repository, llm, notified, monkeypatch
+):
+    idle = await idle_conversation(repository)
+    load = repository.get
+
+    async def load_then_sweep(conversation_id):
+        # The sweep closes the conversation right after the turn loaded it.
+        conversation = await load(conversation_id)
+        await sync_to_async(sweep_abandoned_conversations)()
+        return conversation
+
+    monkeypatch.setattr(repository, "get", load_then_sweep)
+
+    result = await services.engine().handle_text(idle.id, "Hola")
+
+    claim = result.conversation.claim
+    assert claim.closure_reason is ClosureReason.ABANDONED
+    assert [reply.text for reply in result.replies] == [templates.already_closed(claim).text]
+    assert llm.requests == []
