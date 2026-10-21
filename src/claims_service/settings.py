@@ -33,7 +33,8 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
         "HOST": _env("POSTGRES_HOST", "localhost"),
-        "PORT": _env("POSTGRES_PORT", "5432"),
+        # The host port docker compose publishes; containers and CI set their own.
+        "PORT": _env("POSTGRES_PORT", "55432"),
         "NAME": _env("POSTGRES_DB", "claims"),
         "USER": _env("POSTGRES_USER", "claims"),
         "PASSWORD": _env("POSTGRES_PASSWORD", "claims"),
@@ -44,7 +45,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_TZ = True
 TIME_ZONE = "Europe/Madrid"
 
-REDIS_URL = _env("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = _env("REDIS_URL", "redis://localhost:6380/0")
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",

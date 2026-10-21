@@ -7,9 +7,16 @@ from claims_agent.log_config import JsonFormatter
 
 def record(**extra) -> logging.LogRecord:
     return logging.makeLogRecord(
-        {"name": "claims", "levelno": logging.WARNING, "levelname": "WARNING", "msg": "hola %s",
-         "args": ("María",), "created": 0.0} | extra
-    )  # fmt: skip
+        {
+            "name": "claims",
+            "levelno": logging.WARNING,
+            "levelname": "WARNING",
+            "msg": "hola %s",
+            "args": ("María",),
+            "created": 0.0,
+        }
+        | extra
+    )
 
 
 def test_one_json_object_with_the_rendered_message_and_extras():

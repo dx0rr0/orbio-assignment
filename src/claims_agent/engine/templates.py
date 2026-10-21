@@ -22,9 +22,19 @@ from claims_agent.domain import (
 INSURER = "Seguros Brisa"
 
 _MONTHS = (
-    "enero", "febrero", "marzo", "abril", "mayo", "junio",
-    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
-)  # fmt: skip
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+)
 
 LOSS_TYPE_NAMES: dict[LossType, str] = {
     LossType.COLLISION: "colisión",

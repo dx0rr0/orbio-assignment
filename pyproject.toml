@@ -27,6 +27,7 @@ dev = [
     "pytest>=8.4",
     "pytest-asyncio>=1.4.0",
     "pytest-django>=4.14.0",
+    "pytest-env>=1.8.1",
     "ruff>=0.12",
     "websockets>=17.3",
 ]
@@ -38,6 +39,9 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+DJANGO_SETTINGS_MODULE = "claims_service.settings"
+# `uv run pytest` works without an .env file; "D:" keeps a value already set.
+env = ["D:DJANGO_SECRET_KEY=test-only-insecure-key"]
 pythonpath = ["."]
 addopts = "-m 'not e2e'"
 markers = ["e2e: hits real providers; run on demand with `pytest -m e2e`"]

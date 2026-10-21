@@ -1,12 +1,12 @@
-import os
+import hashlib
 
-import django
+import pytest
+from django.conf import settings
 
 
-def pytest_configure() -> None:
-    """The project's settings, with a secret key, so that `uv run pytest` works without an .env
-    file (the pure domain tests need no configuration at all). pytest-django finishes the setup
-    after this hook."""
-    os.environ.setdefault("DJANGO_SECRET_KEY", "test-only-insecure-key")
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "claims_service.settings")
-    django.setup()
+def pytest_configure(config: pytest.Config) -> None:
+    """One test database per checkout: runs in two worktrees at once would otherwise create and
+    drop the same database under each other."""
+    checkout = hashlib.sha256(str(config.rootpath).encode()).hexdigest()[:8]
+    database = settings.DATABASES["default"]
+    database["TEST"] = {"NAME": f"test_{database['NAME']}_{checkout}"}
