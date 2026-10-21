@@ -43,11 +43,11 @@ class Voice:
         self._tts = tts
         self._telemetry = telemetry or NullTelemetry()
 
-    async def transcribe(self, wav: bytes) -> str:
+    async def transcribe(self, audio: bytes) -> str:
         """The transcription, or "" if it failed (the engine then asks to repeat)."""
-        with self._telemetry.span("stt", input={"wav_bytes": len(wav)}) as span:
+        with self._telemetry.span("stt", input={"audio_bytes": len(audio)}) as span:
             try:
-                text = (await self._stt.transcribe(wav)).strip()
+                text = (await self._stt.transcribe(audio)).strip()
             except SpeechError as error:
                 logger.exception("Transcription failed")
                 span.update(metadata={"error": str(error)})

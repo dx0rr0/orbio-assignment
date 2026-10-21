@@ -2,7 +2,7 @@
 
 Client → server:
     {"type": "resume", "token": "..."}                       first message when resuming
-    {"type": "audio", "data": <base64 WAV>}                  a spoken utterance
+    {"type": "audio", "data": <base64 WAV or Ogg Opus>}      a spoken utterance
     {"type": "text", "text": "...", "reply_audio": false}    a typed one (dev mode, evals)
 Server → client:
     conversation_started, snapshot, transcript, bot_message, claim_updated, audio,
@@ -43,7 +43,7 @@ from claims_service.intake.presenters import (
 )
 from claims_service.intake.services import ConsumerServices
 
-# About a minute of 16 kHz mono 16-bit audio, base64-encoded.
+# About a minute of 16 kHz mono 16-bit WAV, base64-encoded (Ogg Opus is far smaller).
 MAX_AUDIO_BASE64_CHARS = 3_000_000
 # Far more than anyone says in one turn; it bounds what a client can make the LLM read.
 MAX_TEXT_CHARS = 2_000
@@ -158,11 +158,11 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
                     reply_audio = bool(content.get("reply_audio", False))
                     await self._turn(content["text"], reply_audio=reply_audio, trace=trace)
             case "audio" if isinstance(content.get("data"), str):
-                wav = await self._decode_audio(content["data"])
-                if wav is None:
+                audio = await self._decode_audio(content["data"])
+                if audio is None:
                     return
-                with self._trace("turn", input={"wav_bytes": len(wav)}) as trace:
-                    utterance = await self._services.voice.transcribe(wav)
+                with self._trace("turn", input={"audio_bytes": len(audio)}) as trace:
+                    utterance = await self._services.voice.transcribe(audio)
                     await self.send_json({"type": "transcript", "text": utterance})
                     await self._turn(utterance, reply_audio=True, trace=trace)
             case _:
@@ -242,7 +242,7 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         await self.send_json({"type": kind, "mime": "audio/wav", "data": data})
 
     async def _decode_audio(self, data: str) -> bytes | None:
-        """The WAV bytes, or None after telling the client what was wrong."""
+        """The audio file's bytes, or None after telling the client what was wrong."""
         if len(data) > MAX_AUDIO_BASE64_CHARS:
             await self._error(error_messages.AUDIO_TOO_LONG)
             return None

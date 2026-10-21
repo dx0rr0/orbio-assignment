@@ -191,11 +191,17 @@ class _OpenRouterAudio:
 
 
 class OpenRouterSpeechToText(_OpenRouterAudio):
-    async def transcribe(self, wav: bytes) -> str:
+    async def transcribe(self, audio: bytes) -> str:
+        # MAI Transcribe takes Ogg Opus as well as WAV (not WebM nor MP4); the browser sends
+        # Ogg where it can encode it, ~12 times smaller.
+        if audio.startswith(b"OggS"):
+            upload = ("utterance.ogg", audio, "audio/ogg")
+        else:
+            upload = ("utterance.wav", audio, "audio/wav")
         response = await self._post(
             "/audio/transcriptions",
             data={"model": STT_MODEL, "language": "es"},
-            files={"file": ("utterance.wav", wav, "audio/wav")},
+            files={"file": upload},
         )
         try:
             return str(response.json()["text"])

@@ -36,7 +36,7 @@ Services: `frontend` (nginx serving the React app and proxying `/api` and `/ws`)
 ## How it works
 
 ```
-browser ──WAV 16 kHz──▶ WebSocket consumer ──▶ STT ──▶ engine turn ──▶ TTS ──▶ browser
+browser ──Ogg Opus────▶ WebSocket consumer ──▶ STT ──▶ engine turn ──▶ TTS ──▶ browser
  (push-to-talk)          (Django Channels)              │
                                                         ├─ LLM: converses, proposes values via tools
                                                         ├─ domain: validates, decides status / urgency / coverage
@@ -75,7 +75,7 @@ cd frontend && npm ci && npm test && npm run lint
 | `tests/service` | Postgres repository (versioning, concurrent reference numbers), WebSocket protocol, API, Celery tasks. |
 | `tests/e2e` | Recorded Spanish utterances (`tests/e2e/fixtures/audio`) through nginx, STT, LLM and TTS. The final claim is checked. |
 | `evals/` | Six scenarios where an LLM plays the declarant (happy path, another driver with injuries, expired policy, loss before the policy started, insisting on a wrong plate, refusing to give a name). |
-| `frontend` | WAV encoding, conversation state, claim stages and value formatting (vitest). |
+| `frontend` | WAV encoding and Ogg Opus muxing, conversation state, claim stages and value formatting (vitest). |
 
 GitHub Actions runs lint and the non-e2e tests for both the backend (with a Postgres service) and the frontend.
 

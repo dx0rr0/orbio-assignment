@@ -6,8 +6,8 @@ class SpeechError(RuntimeError):
 
 
 class SpeechToText(Protocol):
-    async def transcribe(self, wav: bytes) -> str:
-        """Transcribe Spanish speech from a WAV file. Raises `SpeechError`."""
+    async def transcribe(self, audio: bytes) -> str:
+        """Transcribe Spanish speech from a WAV or Ogg Opus file. Raises `SpeechError`."""
         ...
 
 
