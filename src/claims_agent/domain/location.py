@@ -1,6 +1,7 @@
 """Where the loss happened, normalized to way / municipality / province / country."""
 
 import unicodedata
+from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict
 
@@ -29,7 +30,7 @@ def _is_spain(country: str) -> bool:
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch)) in _SPAIN_NAMES
 
 
-def _optional_text(raw: dict, key: str) -> str | None:
+def _optional_text(raw: Mapping[str, object], key: str) -> str | None:
     value = raw.get(key)
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
@@ -38,7 +39,7 @@ def _optional_text(raw: dict, key: str) -> str | None:
     return value.strip()
 
 
-def _required_text(raw: dict, key: str) -> str:
+def _required_text(raw: Mapping[str, object], key: str) -> str:
     value = _optional_text(raw, key)
     if value is None:
         raise FieldError(f"{key} is required")

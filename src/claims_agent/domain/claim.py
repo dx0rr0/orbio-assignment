@@ -88,10 +88,10 @@ CLAIM_FIELDS: tuple[str, ...] = BASE_FIELDS + CONDITIONAL_FIELDS
 
 
 @overload
-def _urgency(injuries: bool, vehicle_immobilized: bool) -> Urgency: ...
+def _urgency(*, injuries: bool, vehicle_immobilized: bool) -> Urgency: ...
 @overload
-def _urgency(injuries: bool | None, vehicle_immobilized: bool | None) -> Urgency | None: ...
-def _urgency(injuries: bool | None, vehicle_immobilized: bool | None) -> Urgency | None:
+def _urgency(*, injuries: bool | None, vehicle_immobilized: bool | None) -> Urgency | None: ...
+def _urgency(*, injuries: bool | None, vehicle_immobilized: bool | None) -> Urgency | None:
     if injuries:
         return Urgency.HIGH
     if vehicle_immobilized:
@@ -126,7 +126,7 @@ class CompleteClaim(BaseModel):
 
     @property
     def urgency(self) -> Urgency:
-        return _urgency(self.injuries, self.vehicle_immobilized)
+        return _urgency(injuries=self.injuries, vehicle_immobilized=self.vehicle_immobilized)
 
 
 class Claim(BaseModel):
@@ -206,7 +206,7 @@ class Claim(BaseModel):
     @property
     def urgency(self) -> Urgency | None:
         """Derived, never asked: None until the data that decides it is known."""
-        return _urgency(self.injuries, self.vehicle_immobilized)
+        return _urgency(injuries=self.injuries, vehicle_immobilized=self.vehicle_immobilized)
 
 
 def format_reference(year: int, sequence: int) -> str:

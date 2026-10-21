@@ -1,5 +1,6 @@
 """The conversation repository port, on the Django ORM and Postgres."""
 
+from typing import Any
 from uuid import UUID
 
 from asgiref.sync import sync_to_async
@@ -10,7 +11,7 @@ from claims_agent.ports import ConcurrentUpdateError, ConversationNotFoundError
 from claims_service.intake.models import ConversationRecord, PolicyRecord
 
 
-def _fields(conversation: Conversation) -> dict:
+def _fields(conversation: Conversation) -> dict[str, Any]:
     return {
         "status": conversation.claim.status.value,
         "document": conversation.model_dump(mode="json", exclude={"version"}),
@@ -76,4 +77,4 @@ def _next_sequence(year: int) -> int:
             [year],
         )
         (last,) = cursor.fetchone()
-    return last
+    return int(last)

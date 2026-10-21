@@ -1,5 +1,6 @@
 """Eval scenarios: a persona for the simulated declarant and what the final claim must be."""
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -17,7 +18,7 @@ class Scenario:
     max_turns: int = 14
 
 
-def _starts_with(prefix: str):
+def _starts_with(prefix: str) -> Callable[[Any], bool]:
     def check(value: Any) -> bool:
         return isinstance(value, str) and value.startswith(prefix)
 

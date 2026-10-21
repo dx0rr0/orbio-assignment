@@ -52,17 +52,51 @@ target-version = "py313"
 extend-exclude = ["**/migrations/*"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+# Inline suppressions are not allowed (CI runs ruff with --ignore-noqa and
+# scripts/check_suppressions.py); the exceptions below are the only ones, by file.
+select = [
+    "E", "W", "F", "I", "B", "UP", "SIM", "RUF", "C4", "PIE", "RET", "PERF", "FURB", "ISC",
+    "ANN",     # annotated signatures
+    "S",       # security, and no `assert` outside tests
+    "BLE",     # no blind `except Exception` unless the exception is logged
+    "ASYNC",   # no blocking calls in async code
+    "DTZ",     # no naive datetimes
+    "PTH",     # pathlib
+    "T20",     # no print outside the command-line tools
+    "ERA",     # no commented-out code
+    "PGH",     # no blanket `type: ignore` / `noqa`
+    "TID",     # banned APIs, below
+    "SLF",     # no private member access from outside
+    "LOG", "G",
+    "FBT001", "FBT002",  # no positional boolean parameters
+    "PLW",
+]
+# `Any` stays allowed in signatures for JSON payloads and framework callbacks.
+ignore = ["ANN401"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"typing.cast".msg = "Type the value properly instead of casting it."
 
 [tool.ruff.lint.per-file-ignores]
 # Django declares model options as class attributes.
 "**/models.py" = ["RUF012"]
+# pytest asserts, and test functions need no annotations.
+"tests/**" = ["S101", "ANN"]
+# Command-line tools: printing is their output.
+"scripts/**" = ["T201"]
+"evals/**" = ["T201"]
 
 [tool.mypy]
 python_version = "3.13"
+strict = true
 files = ["src", "evals", "scripts"]
 exclude = ["/migrations/"]
 # Django, Celery and Channels ship no type information; checking against them is out of scope.
 [[tool.mypy.overrides]]
 module = ["django.*", "celery.*", "channels.*", "ninja.*"]
 ignore_missing_imports = true
+# Their base classes and decorators are untyped, so the service layer may subclass and use them.
+[[tool.mypy.overrides]]
+module = ["claims_service.*"]
+disallow_subclassing_any = false
+disallow_untyped_decorators = false

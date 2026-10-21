@@ -170,7 +170,7 @@ def apply_update(
     )
     inapplicable = _inapplicable_fields(updated)
     updated = updated.model_copy(
-        update={name: None for name in inapplicable}
+        update=dict.fromkeys(inapplicable)
         | {
             "field_errors": {k: v for k, v in field_errors.items() if k not in inapplicable},
             "failed_attempts": {k: v for k, v in failed_attempts.items() if k not in inapplicable},

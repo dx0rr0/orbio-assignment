@@ -46,19 +46,24 @@ class TaskServices:
     queue_summary: Callable[[str], None]
 
 
-_services: TaskServices | None = None
+@dataclass
+class _Configuration:
+    services: TaskServices | None = None
+
+
+# Celery calls the tasks by name, so their dependencies are set once per worker process.
+_configuration = _Configuration()
 
 
 def configure(services: TaskServices) -> None:
     """Run the tasks of this process with `services`."""
-    global _services
-    _services = services
+    _configuration.services = services
 
 
 def _configured() -> TaskServices:
-    if _services is None:
+    if _configuration.services is None:
         raise RuntimeError("the tasks have no services: call tasks.configure() first")
-    return _services
+    return _configuration.services
 
 
 def notify_watchers(conversation: Conversation) -> None:
@@ -70,7 +75,14 @@ def notify_watchers(conversation: Conversation) -> None:
 
 
 class _SummaryTask(Task):
-    def on_failure(self, exc, task_id, args, kwargs, einfo) -> None:
+    def on_failure(
+        self,
+        exc: BaseException,
+        task_id: str,
+        args: tuple[str, ...],
+        kwargs: dict[str, object],
+        einfo: object,
+    ) -> None:
         """After the last retry: say so, and mark the conversation so that nobody waits for a
         summary (nor `queue_missing_summaries` queues it again)."""
         conversation_id = args[0]

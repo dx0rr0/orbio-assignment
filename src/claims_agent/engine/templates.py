@@ -111,7 +111,7 @@ def _sentence(text: str) -> str:
     return text if text.endswith((".", "!", "?")) else f"{text}."
 
 
-def _yes_no(value: bool | None) -> str:
+def _yes_no(*, value: bool | None) -> str:
     return "sí" if value else "no"
 
 
@@ -157,26 +157,32 @@ def read_back(incomplete: Claim) -> BotMessage:
     lines: list[tuple[str, str | None]] = [
         (
             f"Póliza {claim.policy_number}, matrícula {display_plate(claim.plate)}.",
-            f"Póliza {spoken_policy_number(claim.policy_number)}, "
-            f"matrícula {spoken_plate(claim.plate)}.",
+            (
+                f"Póliza {spoken_policy_number(claim.policy_number)}, "
+                f"matrícula {spoken_plate(claim.plate)}."
+            ),
         ),
         (f"Declarante: {claim.declarant_name}. Conductor: {driver}.", None),
         (
-            f"Siniestro: {LOSS_TYPE_NAMES[claim.loss_type]}, "
-            f"{format_loss_window(claim.loss_window)}, en {place}.",
+            (
+                f"Siniestro: {LOSS_TYPE_NAMES[claim.loss_type]}, "
+                f"{format_loss_window(claim.loss_window)}, en {place}."
+            ),
             None,
         ),
         (f"Descripción: {_sentence(claim.description)}", None),
         (
-            f"Heridos: {_yes_no(claim.injuries)}. "
-            f"Vehículo inmovilizado: {_yes_no(claim.vehicle_immobilized)}.",
+            (
+                f"Heridos: {_yes_no(value=claim.injuries)}. "
+                f"Vehículo inmovilizado: {_yes_no(value=claim.vehicle_immobilized)}."
+            ),
             None,
         ),
     ]
     if claim.loss_type is LossType.COLLISION:
         # Set exactly when another vehicle was involved.
         if (plate := claim.other_vehicle_plate) is not None:
-            report = f"Parte amistoso firmado: {_yes_no(claim.friendly_report_signed)}."
+            report = f"Parte amistoso firmado: {_yes_no(value=claim.friendly_report_signed)}."
             lines.append(
                 (
                     f"Otro vehículo implicado, matrícula {display_plate(plate)}. {report}",
@@ -186,7 +192,7 @@ def read_back(incomplete: Claim) -> BotMessage:
         else:
             lines.append(("No hubo otro vehículo implicado.", None))
     if claim.loss_type is LossType.THEFT:
-        lines.append((f"Denuncia presentada: {_yes_no(claim.police_report_filed)}.", None))
+        lines.append((f"Denuncia presentada: {_yes_no(value=claim.police_report_filed)}.", None))
 
     intro = "Le leo los datos de la declaración:"
     question = "¿Es todo correcto?"

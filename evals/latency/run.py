@@ -25,6 +25,7 @@ import contextlib
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import statistics
@@ -61,6 +62,8 @@ from claims_agent.engine import templates
 from claims_agent.ports import ChatModel, Completion, NullTelemetry, Span, ToolSpec
 from claims_agent.seed import seed_policies
 from evals.latency.cases import CASES, TEST_IDS, Case, read_back_text, resolve
+
+logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
 FLOW = ROOT / ".claude" / "hillclimb" / "ttfa"
@@ -229,8 +232,10 @@ def trace_of(conversation: Conversation) -> list[dict[str, Any]]:
             continue
         if message.content:
             turns.append({"role": message.role.value, "content": message.content})
-        for call in message.tool_calls:
-            turns.append({"role": "tool_call", "name": call.name, "content": call.arguments})
+        turns.extend(
+            {"role": "tool_call", "name": call.name, "content": call.arguments}
+            for call in message.tool_calls
+        )
     return turns
 
 
@@ -423,6 +428,7 @@ async def run_cases(
         try:
             await run_case(next(c for c in CASES if c.id == WARM_UP), harness)
         except Exception as error:  # recorded, never scored
+            logger.exception("The warm-up turn failed")
             record_error(WARM_UP, "warm-up", error)
             return 4
     for rep, case in pending:
@@ -433,6 +439,7 @@ async def run_cases(
         try:
             row = await run_case(case, harness)
         except Exception as error:  # recorded, never scored
+            logger.exception("Case %s failed", case.id)
             record_error(case.id, rep, error)
             return 4
         row["rep"] = rep

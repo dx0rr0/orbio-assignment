@@ -73,18 +73,16 @@ def _tool_to_openai(tool: ToolSpec) -> ChatCompletionToolParam:
 
 
 class OpenRouterChatModel:
-    """Chat completions with tools. Takes the client so that it can be the Langfuse-wrapped
-    `AsyncOpenAI`, which records each call as a generation with tokens and cost."""
+    """Chat completions with tools. Takes the client so tests can give it a fake transport;
+    with Langfuse on, its OpenAI integration records each call as a generation."""
 
     def __init__(self, client: openai.AsyncOpenAI, model: str = CHAT_MODEL) -> None:
         self._client = client
         self._model = model
 
     @classmethod
-    def create(
-        cls, api_key: str, *, client_class: type[openai.AsyncOpenAI] = openai.AsyncOpenAI
-    ) -> "OpenRouterChatModel":
-        client = client_class(
+    def create(cls, api_key: str) -> "OpenRouterChatModel":
+        client = openai.AsyncOpenAI(
             api_key=api_key, base_url=BASE_URL, timeout=CHAT_TIMEOUT_SECONDS, max_retries=0
         )
         return cls(client)

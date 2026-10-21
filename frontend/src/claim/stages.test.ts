@@ -56,9 +56,9 @@ describe('stages', () => {
       ]),
     )
 
-    const otherVehicle = result.find((s) => s.id === 'other_vehicle')!
+    const otherVehicle = result.find((s) => s.id === 'other_vehicle')
     expect(otherVehicle).toMatchObject({ state: 'error', current: false })
-    expect(otherVehicle.lines).toEqual([
+    expect(otherVehicle?.lines).toEqual([
       { text: 'Matrícula del otro vehículo: «25» no vale', error: true },
     ])
     expect(result[0].lines[1]).toEqual({
@@ -82,10 +82,10 @@ describe('stages', () => {
 
     const pending = stages(claim(complete, 'pending_confirmation'))
     expect(pending.at(-1)).toMatchObject({ id: 'confirmation', current: true })
-    expect(pending.find((s) => s.id === 'loss')!.lines[0].text).toBe(
+    expect(pending.find((s) => s.id === 'loss')?.lines[0].text).toBe(
       'Robo · 19 oct 2026, 19:00 · Alcalá de Henares',
     )
-    expect(pending.find((s) => s.id === 'police')!.lines[0].text).toBe('Denuncia presentada')
+    expect(pending.find((s) => s.id === 'police')?.lines[0].text).toBe('Denuncia presentada')
 
     const confirmed = stages(claim(complete, 'confirmed'))
     expect(confirmed.every((s) => s.state === 'done' && !s.current)).toBe(true)

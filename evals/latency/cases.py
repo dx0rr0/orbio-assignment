@@ -394,7 +394,8 @@ CASES: tuple[Case, ...] = (
 # Held out from the hill-climb rounds, one per kind of case, and run only to validate the
 # result: rounds are measured on the rest (train), so a change can't be fitted to these.
 TEST_IDS = frozenset({"1b", "3a", "R03", "R07", "R10", "R12", "R16"})
-assert {case.id for case in CASES} >= TEST_IDS
+if not {case.id for case in CASES} >= TEST_IDS:
+    raise ValueError(f"unknown test cases: {TEST_IDS - {case.id for case in CASES}}")
 
 
 def resolve(known: Mapping[str, Any], now: datetime) -> dict[str, Any]:

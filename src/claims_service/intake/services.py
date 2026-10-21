@@ -2,13 +2,13 @@
 worker process (`for_tasks`) build their dependencies here once and hand them in; tests and the
 evals build their own, with fakes."""
 
+import importlib
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Protocol
 from uuid import UUID
 
-import openai
 from django.conf import settings
 
 from claims_agent.adapters.openrouter import (
@@ -66,12 +66,11 @@ def telemetry_from_settings() -> Telemetry:
 def chat_model_from_settings() -> OpenRouterChatModel:
     """With Langfuse on, the OpenAI client is its wrapper, which records each completion as
     a generation (tokens and cost) under the current span."""
-    client_class: type[openai.AsyncOpenAI] = openai.AsyncOpenAI
     if settings.LANGFUSE_ENABLED:
-        from langfuse.openai import AsyncOpenAI
-
-        client_class = AsyncOpenAI
-    return OpenRouterChatModel.create(settings.OPENROUTER_API_KEY, client_class=client_class)
+        # Importing it wraps the OpenAI client classes in place (`langfuse.openai.AsyncOpenAI`
+        # is `openai.AsyncOpenAI`).
+        importlib.import_module("langfuse.openai")
+    return OpenRouterChatModel.create(settings.OPENROUTER_API_KEY)
 
 
 @asynccontextmanager

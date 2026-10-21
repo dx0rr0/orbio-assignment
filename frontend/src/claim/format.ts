@@ -83,9 +83,9 @@ export function formatValue(name: string, value: unknown): string {
   switch (name) {
     case 'plate':
     case 'other_vehicle_plate':
-      return displayPlate(String(value))
+      return typeof value === 'string' ? displayPlate(value) : asText(value)
     case 'loss_type':
-      return (typeof value === 'string' && LOSS_TYPES[value]) || String(value)
+      return (typeof value === 'string' && LOSS_TYPES[value]) || asText(value)
     case 'loss_window': {
       const lossWindow = LossWindow.safeParse(value)
       if (!lossWindow.success) return asText(value)
@@ -106,5 +106,5 @@ export function formatValue(name: string, value: unknown): string {
 
 /** A value of an unexpected shape, shown as it came rather than as '[object Object]'. */
 function asText(value: unknown): string {
-  return typeof value === 'object' ? JSON.stringify(value) : String(value)
+  return typeof value === 'string' ? value : JSON.stringify(value)
 }

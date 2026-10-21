@@ -36,7 +36,7 @@ async def main(utterances: list[str]) -> None:
     while not result.conversation.claim.status.is_final:
         if lines is None:
             try:
-                utterance = input("\nTÚ> ")
+                utterance = await asyncio.to_thread(input, "\nTÚ> ")
             except EOFError:
                 break
         else:

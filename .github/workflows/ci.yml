@@ -28,7 +28,9 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --frozen
-      - run: uv run ruff check .
+      # Inline suppressions are not allowed: noqa comments are ignored, and any kind fails.
+      - run: uv run python scripts/check_suppressions.py
+      - run: uv run ruff check --ignore-noqa .
       - run: uv run ruff format --check .
       - run: uv run mypy
       # e2e tests need real providers and the running stack; they are excluded by default.

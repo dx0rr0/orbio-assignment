@@ -44,13 +44,13 @@ def check_summary(key_points: Sequence[str], claim: Claim, declarant_said: str =
 
 
 def _unknown_identifiers(text: str, claim: Claim, declarant_said: str) -> list[str]:
-    findings = []
     validated = {v for v in (claim.policy_number, claim.plate, claim.other_vehicle_plate) if v}
     known_numbers = _policy_numbers(declarant_said) | validated
-    for number in sorted(_policy_numbers(text) - known_numbers):
-        findings.append(f"policy number {number} was never given")
-
     known_plates = _plates(declarant_said) | validated
-    for plate in sorted(_plates(text) - known_plates):
-        findings.append(f"plate {plate} was never given")
-    return findings
+    return [
+        *(
+            f"policy number {number} was never given"
+            for number in sorted(_policy_numbers(text) - known_numbers)
+        ),
+        *(f"plate {plate} was never given" for plate in sorted(_plates(text) - known_plates)),
+    ]

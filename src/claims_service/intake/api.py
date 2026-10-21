@@ -4,6 +4,7 @@ from typing import Any
 from uuid import UUID
 
 from django.conf import settings
+from django.http import HttpRequest
 from ninja import NinjaAPI
 from ninja.errors import HttpError
 
@@ -19,13 +20,13 @@ _repository = DjangoConversationRepository()
 
 
 @api.get("/health")
-async def health(request) -> dict[str, str]:
+async def health(request: HttpRequest) -> dict[str, str]:
     return {"status": "ok"}
 
 
 @api.get("/conversations")
 async def list_conversations(
-    request, status: ClaimStatus | None = None, limit: int = 20
+    request: HttpRequest, status: ClaimStatus | None = None, limit: int = 20
 ) -> list[dict[str, Any]]:
     """Most recent first, optionally by claim status. Every conversation's personal data, so
     only for local development until there is real authentication."""
@@ -41,7 +42,7 @@ async def list_conversations(
 
 
 @api.get("/conversations/{conversation_id}")
-async def get_conversation(request, conversation_id: UUID) -> dict[str, Any]:
+async def get_conversation(request: HttpRequest, conversation_id: UUID) -> dict[str, Any]:
     """Needs `Authorization: Bearer <token>`, with the token from `conversation_started`."""
     token = access.bearer_token(request.headers.get("Authorization"))
     if not await access.is_authorized(conversation_id, token):

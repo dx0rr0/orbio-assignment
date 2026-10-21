@@ -48,10 +48,14 @@ export function TalkButton({
         aria-label={label}
         disabled={disabled}
         onPointerDown={start}
-        onPointerUp={stop}
-        onPointerLeave={stop}
-        onKeyDown={(e) => e.key === ' ' && !e.repeat && start()}
-        onKeyUp={(e) => e.key === ' ' && stop()}
+        onPointerUp={() => void stop()}
+        onPointerLeave={() => void stop()}
+        onKeyDown={(e) => {
+          if (e.key === ' ' && !e.repeat) start()
+        }}
+        onKeyUp={(e) => {
+          if (e.key === ' ') void stop()
+        }}
       >
         <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <rect x="9" y="2" width="6" height="12" rx="3" />

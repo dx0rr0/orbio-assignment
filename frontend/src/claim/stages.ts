@@ -38,7 +38,10 @@ const GROUPS: Group[] = [
     id: 'driver',
     title: 'Conductor',
     fields: ['driver_is_policyholder', 'driver_name'],
-    summary: (v) => (v.driver_is_policyholder ? 'El titular' : `${v.driver_name} (no es el titular)`),
+    summary: (v) =>
+      v.driver_is_policyholder
+        ? 'El titular'
+        : `${formatValue('driver_name', v.driver_name)} (no es el titular)`,
   },
   {
     id: 'loss',
@@ -88,7 +91,7 @@ function fieldLine(field: ClaimField): StageLine {
     case 'valid':
       return { text: `${label}: ${formatValue(field.name, field.value)}`, error: false }
     case 'invalid':
-      return { text: `${label}: ${field.error}`, error: true }
+      return { text: `${label}: ${field.error ?? 'no es válido'}`, error: true }
     case 'empty':
       return { text: `${label}: pendiente`, error: false }
   }

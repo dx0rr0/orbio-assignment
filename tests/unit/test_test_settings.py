@@ -24,6 +24,7 @@ def test_pure_tests_run_without_an_env_file():
         capture_output=True,
         text=True,
         timeout=60,
+        check=False,
     )
 
     assert run.returncode == 0, run.stdout + run.stderr

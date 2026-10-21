@@ -193,13 +193,15 @@ async def test_correcting_and_confirming_in_one_response_reads_back_again(
     assert texts(result) == [templates.read_back(claim).text]
 
 
-async def test_confirming_data_that_was_not_read_back_is_refused(engine, llm, conversation_id):
+async def test_confirming_data_that_was_not_read_back_is_refused(
+    engine, llm, repository, conversation_id
+):
     # Whatever path got unheard data into a pending claim, it cannot be confirmed.
     llm.then(call(UPDATE_CLAIM, COMPLETE))
     await engine.handle_text(conversation_id, "Todos los datos")
-    conversation = await engine._repository.get(conversation_id)
+    conversation = await repository.get(conversation_id)
     unheard = conversation.claim.model_copy(update={"description": "Otra cosa que nadie oyó"})
-    await engine._repository.save(conversation.model_copy(update={"claim": unheard}))
+    await repository.save(conversation.model_copy(update={"claim": unheard}))
     llm.then(call(CONFIRM_CLAIM), say("Antes le leo los datos de nuevo."))
 
     result = await engine.handle_text(conversation_id, "Sí, confírmelo")
@@ -569,9 +571,9 @@ async def test_tool_results_survive_the_turn_deadline(llm, repository, conversat
 
         async def complete(self, **request):
             self.calls += 1
-            if self.calls == 1:
-                return call(UPDATE_CLAIM, IDENTIFICATION)
-            await asyncio.Event().wait()
+            if self.calls > 1:
+                await asyncio.Event().wait()  # never answers again
+            return call(UPDATE_CLAIM, IDENTIFICATION)
 
     engine = ConversationEngine(llm=SlowAfterTools(), repository=repository, turn_deadline=0.05)
 

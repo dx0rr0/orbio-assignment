@@ -21,8 +21,10 @@ export function downsample(samples: Float32Array, fromRate: number, toRate: numb
 export function encodeWav(samples: Float32Array, sampleRate: number): ArrayBuffer {
   const buffer = new ArrayBuffer(44 + samples.length * 2)
   const view = new DataView(buffer)
-  const ascii = (offset: number, text: string) =>
-    [...text].forEach((char, i) => view.setUint8(offset + i, char.charCodeAt(0)))
+  // Chunk ids are plain ASCII, one byte per UTF-16 code unit.
+  const ascii = (offset: number, text: string) => {
+    for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i))
+  }
 
   ascii(0, 'RIFF')
   view.setUint32(4, 36 + samples.length * 2, true)

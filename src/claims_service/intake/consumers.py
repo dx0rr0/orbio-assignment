@@ -66,7 +66,8 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             await self._open()
         except Exception:
             # Nothing to resume without a conversation: apologise and hang up.
-            await self._technical_problem("Could not open the conversation")
+            logger.exception("Could not open the conversation", extra=self._log_context())
+            await self._apologise()
             await self.close(code=INTERNAL_ERROR_CLOSE_CODE)
 
     async def _open(self) -> None:
@@ -127,7 +128,8 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             try:
                 await self._resume(content)
             except Exception:
-                await self._technical_problem("Could not resume the conversation")
+                logger.exception("Could not resume the conversation", extra=self._log_context())
+                await self._apologise()
                 await self.close(code=INTERNAL_ERROR_CLOSE_CODE)
             return
         try:
@@ -135,7 +137,8 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         except Exception:
             # The trace records the exception as it leaves it; the conversation is as it was
             # stored before this message, so the declarant can say it again.
-            await self._technical_problem("Could not handle the message")
+            logger.exception("Could not handle the message", extra=self._log_context())
+            await self._apologise()
 
     async def _receive(self, content: Any) -> None:
         if not isinstance(content, dict):
@@ -230,12 +233,12 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             await self._error(error_messages.UNREADABLE_AUDIO)
             return None
 
-    async def _technical_problem(self, log_message: str) -> None:
-        """Log the exception being handled and apologise from the template."""
+    def _log_context(self) -> dict[str, str | None]:
         conversation_id = getattr(self, "conversation_id", None)
-        logger.exception(
-            log_message, extra={"conversation_id": conversation_id and str(conversation_id)}
-        )
+        return {"conversation_id": conversation_id and str(conversation_id)}
+
+    async def _apologise(self) -> None:
+        """After an unexpected error, apologise from the template."""
         await self.send_json(bot_message_event(templates.technical_problem()))
 
     async def _error(self, message: str) -> None:
