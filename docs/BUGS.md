@@ -106,6 +106,16 @@ Ground rules for whoever fixes them:
 - **Fix:** either keep `description` to what happened, without the place or time (they have their own fields), or tell the LLM to re-propose `description` whenever a correction touches something it mentions. The first is simpler and also shortens the read-back.
 - **Tests:** engine test with a scripted fake LLM is not enough here (the bug is the LLM's choice); cover the prompt/tool wording with an eval scenario: a correction of the location during the read-back, asserting the final `description` doesn't mention the old place.
 
+### B14. An other vehicle that fled closes the claim as refused data
+
+- [ ] Known limitation, left for after the demo
+- **Found:** 2026-10-22, in a QA pass in the browser with the real LLM.
+- **Where:** `src/claims_agent/domain/claim.py` (`required_fields`: a collision with another vehicle always requires `other_vehicle_plate` and `friendly_report_signed`); `src/claims_agent/engine/prompts.py` and `tools.py` (`declarant_refuses_field`).
+- **Trigger:** a collision where the other vehicle fled: "se dio a la fuga, no tengo su matrícula". The agent asks twice; a second "no la sé" is taken as a refusal and the claim closes as `incomplete` (`data_refused`).
+- **Expected:** not knowing a value is not refusing it. A claim with an unidentified other vehicle can be completed: no plate and no friendly report, but whether a police report was filed (as insurers require), and a next step for the adjuster to get it (and, with injuries, to go to the Consorcio de Compensación de Seguros).
+- **Fix:** a claim field for whether the other vehicle was identified; when it wasn't, require `police_report_filed` instead of the plate and the friendly report. Tell the LLM apart "no lo sé" from "no quiero".
+- **Tests:** domain tests for the required fields; an eval scenario with a hit-and-run.
+
 ## Low
 
 ### B10. An empty `end` in `loss_window` is rejected
