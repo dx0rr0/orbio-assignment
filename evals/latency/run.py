@@ -405,7 +405,13 @@ def build_harness() -> Harness:
     resources.push_async_callback(chat_model.aclose)
     llm = MeteredChatModel(chat_model, meter)
     consumer_services = services.ConsumerServices(
-        engine=ConversationEngine(llm=llm, repository=repository, telemetry=telemetry),
+        engine=ConversationEngine(
+            llm=llm,
+            conversations=repository,
+            policies=repository,
+            references=repository,
+            telemetry=telemetry,
+        ),
         voice=Voice(*services.speech_from_settings(resources), telemetry),
         repository=repository,
         telemetry=telemetry,

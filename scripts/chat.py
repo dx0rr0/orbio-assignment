@@ -26,7 +26,10 @@ def show(result: TurnResult) -> None:
 async def main(utterances: list[str]) -> None:
     repository = InMemoryConversationRepository(seed_policies(datetime.now(MADRID).date()))
     engine = ConversationEngine(
-        llm=OpenRouterChatModel.create(os.environ["OPENROUTER_API_KEY"]), repository=repository
+        llm=OpenRouterChatModel.create(os.environ["OPENROUTER_API_KEY"]),
+        conversations=repository,
+        policies=repository,
+        references=repository,
     )
     result = await engine.start()
     show(result)

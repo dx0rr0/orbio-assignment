@@ -25,7 +25,13 @@ def repository() -> InMemoryConversationRepository:
 @pytest.fixture
 def engine(llm, repository, telemetry) -> ConversationEngine:
     return ConversationEngine(
-        llm=llm, repository=repository, telemetry=telemetry, clock=lambda: NOW, sleep=no_sleep
+        llm=llm,
+        conversations=repository,
+        policies=repository,
+        references=repository,
+        telemetry=telemetry,
+        clock=lambda: NOW,
+        sleep=no_sleep,
     )
 
 

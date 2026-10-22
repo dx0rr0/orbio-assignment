@@ -19,7 +19,11 @@ from claims_agent.engine import ConversationEngine, templates
 from claims_agent.engine.summary import RECORD_KEY_POINTS
 from claims_agent.ports import NullTelemetry
 from claims_service.intake import tasks
-from claims_service.intake.repository import DjangoConversationRepository
+from claims_service.intake.repository import (
+    DjangoConversationRepository,
+    DjangoPolicyCatalog,
+    PostgresReferenceSequence,
+)
 from claims_service.intake.tasks import (
     ABANDONED_AFTER,
     SUMMARY_GIVE_UP_AFTER,
@@ -222,7 +226,13 @@ async def test_a_turn_on_a_conversation_swept_meanwhile_is_told_it_closed(
     repository, llm, notified
 ):
     idle = await idle_conversation(repository)
-    engine = ConversationEngine(llm=llm, repository=SweptAfterLoading(), sleep=no_sleep)
+    engine = ConversationEngine(
+        llm=llm,
+        conversations=SweptAfterLoading(),
+        policies=DjangoPolicyCatalog(),
+        references=PostgresReferenceSequence(),
+        sleep=no_sleep,
+    )
 
     result = await engine.handle_text(idle.id, "Hola")
 

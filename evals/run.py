@@ -82,7 +82,9 @@ def check(scenario: Scenario, claim: Claim) -> list[str]:
 
 async def run(scenario: Scenario, llm: OpenRouterChatModel) -> Result:
     repository = InMemoryConversationRepository(seed_policies(datetime.now(MADRID).date()))
-    engine = ConversationEngine(llm=llm, repository=repository)
+    engine = ConversationEngine(
+        llm=llm, conversations=repository, policies=repository, references=repository
+    )
     declarant = SimulatedDeclarant(llm, scenario.persona)
 
     result = await engine.start()

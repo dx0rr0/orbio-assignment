@@ -13,7 +13,11 @@ from claims_agent.ports import NullTelemetry, SpeechError
 from claims_agent.seed import seed_policies
 from claims_service.intake import access
 from claims_service.intake.models import PolicyRecord
-from claims_service.intake.repository import DjangoConversationRepository
+from claims_service.intake.repository import (
+    DjangoConversationRepository,
+    DjangoPolicyCatalog,
+    PostgresReferenceSequence,
+)
 from claims_service.intake.routing import websocket_application
 from claims_service.intake.services import ConsumerServices
 from tests.engine.fakes import RecordingTelemetry, ScriptedLLM, no_sleep
@@ -93,7 +97,12 @@ def repository() -> DjangoConversationRepository:
 @pytest.fixture
 def engine(llm, repository) -> ConversationEngine:
     return ConversationEngine(
-        llm=llm, repository=repository, telemetry=RecordingTelemetry(), sleep=no_sleep
+        llm=llm,
+        conversations=repository,
+        policies=DjangoPolicyCatalog(),
+        references=PostgresReferenceSequence(),
+        telemetry=RecordingTelemetry(),
+        sleep=no_sleep,
     )
 
 

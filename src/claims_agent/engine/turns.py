@@ -46,6 +46,8 @@ from claims_agent.ports import (
     ConversationRepository,
     LLMError,
     NullTelemetry,
+    PolicyCatalog,
+    ReferenceSequence,
     Telemetry,
 )
 
@@ -143,14 +145,18 @@ class ConversationEngine:
         self,
         *,
         llm: ChatModel,
-        repository: ConversationRepository,
+        conversations: ConversationRepository,
+        policies: PolicyCatalog,
+        references: ReferenceSequence,
         telemetry: Telemetry | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(MADRID),
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         turn_deadline: float = TURN_DEADLINE_SECONDS,
     ) -> None:
         self._llm = llm
-        self._repository = repository
+        self._conversations = conversations
+        self._policies = policies
+        self._references = references
         self._telemetry = telemetry or NullTelemetry()
         self._clock = clock
         self._sleep = sleep
@@ -158,21 +164,21 @@ class ConversationEngine:
 
     async def start(self) -> TurnResult:
         conversation, replies = _say(Conversation.start(self._clock()), templates.greeting())
-        return TurnResult(await self._repository.create(conversation), replies)
+        return TurnResult(await self._conversations.create(conversation), replies)
 
     async def handle_text(self, conversation_id: UUID, utterance: str) -> TurnResult:
         now = self._clock()
-        conversation = await self._repository.get(conversation_id)
+        conversation = await self._conversations.get(conversation_id)
         if not conversation.claim.status.is_final:
             # Mark the activity before the slow part of the turn, so that the abandonment
             # sweep leaves the conversation alone while the turn is being processed.
             try:
-                conversation = await self._repository.save(
+                conversation = await self._conversations.save(
                     conversation.model_copy(update={"updated_at": now})
                 )
             except ConcurrentUpdateError:
                 # Saved meanwhile, e.g. closed by the sweep right after we loaded it.
-                conversation = await self._repository.get(conversation_id)
+                conversation = await self._conversations.get(conversation_id)
         if conversation.claim.status.is_final:
             status = conversation.claim.status
             reply = templates.already_closed(conversation.claim)
@@ -188,9 +194,9 @@ class ConversationEngine:
 
         conversation = conversation.model_copy(update={"updated_at": now})
         try:
-            saved = await self._repository.save(conversation)
+            saved = await self._conversations.save(conversation)
         except ConcurrentUpdateError:
-            stored = await self._repository.get(conversation_id)
+            stored = await self._conversations.get(conversation_id)
             if not stored.claim.status.is_final:
                 raise
             # Closed by someone else while this turn ran: that is what the declarant must hear.
@@ -270,7 +276,7 @@ class ConversationEngine:
         """The claim's policy, once the declarant is identified by its number and plate."""
         if claim.policy_number is None or claim.plate is None:
             return None
-        return identified_policy(claim, await self._repository.get_policy(claim.policy_number))
+        return identified_policy(claim, await self._policies.get_policy(claim.policy_number))
 
     # --- LLM loop -------------------------------------------------------------------------
 
@@ -374,7 +380,7 @@ class ConversationEngine:
         )
         with self._telemetry.span("validation", input=proposed) as span:
             number = policy_number_to_look_up(claim, proposed)
-            policy: Policy | None = await self._repository.get_policy(number) if number else None
+            policy: Policy | None = await self._policies.get_policy(number) if number else None
             result = apply_update(
                 claim, proposed, policy=policy, now=turn.now, already_failed=turn.failed_fields
             )
@@ -401,7 +407,7 @@ class ConversationEngine:
                 error="the declarant has not heard the current data yet"
             )
         year = now.astimezone(MADRID).year
-        sequence = await self._repository.next_reference_sequence(year)
+        sequence = await self._references.next_reference_sequence(year)
         claim = confirm(claim, format_reference(year, sequence))
         return conversation.model_copy(update={"claim": claim}), ToolResult(status=claim.status)
 

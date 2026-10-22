@@ -96,7 +96,14 @@ class LookupRecorder(InMemoryConversationRepository):
 
 async def test_the_policy_is_looked_up_only_for_a_number_and_not_used_before_the_plate(llm):
     repository = LookupRecorder()
-    engine = ConversationEngine(llm=llm, repository=repository, clock=lambda: NOW, sleep=no_sleep)
+    engine = ConversationEngine(
+        llm=llm,
+        conversations=repository,
+        policies=repository,
+        references=repository,
+        clock=lambda: NOW,
+        sleep=no_sleep,
+    )
     conversation_id = (await engine.start()).conversation.id
     llm.then(call(UPDATE_CLAIM, {"declarant_name": "María López"}), say("¿Su póliza?"))
     llm.then(call(UPDATE_CLAIM, {"policy_number": "AUT-48213907"}), say("¿Y la matrícula?"))
@@ -484,7 +491,14 @@ class Clock:
 
 async def test_closed_conversation_does_not_call_the_llm(llm, repository):
     clock = Clock()
-    engine = ConversationEngine(llm=llm, repository=repository, clock=clock, sleep=no_sleep)
+    engine = ConversationEngine(
+        llm=llm,
+        conversations=repository,
+        policies=repository,
+        references=repository,
+        clock=clock,
+        sleep=no_sleep,
+    )
     conversation_id = (await engine.start()).conversation.id
     llm.then(call(UPDATE_CLAIM, COMPLETE), call(CONFIRM_CLAIM))
     await engine.handle_text(conversation_id, "Todos los datos")
@@ -512,7 +526,14 @@ async def test_a_turn_marks_the_conversation_active_before_the_llm_replies(repos
             return await super().complete(**request)
 
     llm = Observing().then(say("¿Me indica su póliza?"))
-    engine = ConversationEngine(llm=llm, repository=repository, clock=clock, sleep=no_sleep)
+    engine = ConversationEngine(
+        llm=llm,
+        conversations=repository,
+        policies=repository,
+        references=repository,
+        clock=clock,
+        sleep=no_sleep,
+    )
     conversation_id = (await engine.start()).conversation.id
     clock.now += timedelta(minutes=5)
 
@@ -790,7 +811,13 @@ async def test_a_turn_that_takes_too_long_apologises(llm, repository, conversati
         async def complete(self, **request):
             await asyncio.Event().wait()  # never answers
 
-    engine = ConversationEngine(llm=HangingLLM(), repository=repository, turn_deadline=0.05)
+    engine = ConversationEngine(
+        llm=HangingLLM(),
+        conversations=repository,
+        policies=repository,
+        references=repository,
+        turn_deadline=0.05,
+    )
 
     result = await engine.handle_text(conversation_id, "Hola, quiero dar un parte")
 
@@ -810,7 +837,13 @@ async def test_tool_results_survive_the_turn_deadline(llm, repository, conversat
                 await asyncio.Event().wait()  # never answers again
             return call(UPDATE_CLAIM, IDENTIFICATION)
 
-    engine = ConversationEngine(llm=SlowAfterTools(), repository=repository, turn_deadline=0.05)
+    engine = ConversationEngine(
+        llm=SlowAfterTools(),
+        conversations=repository,
+        policies=repository,
+        references=repository,
+        turn_deadline=0.05,
+    )
 
     result = await engine.handle_text(conversation_id, "AUT 48213907, 4721 KLM")
 
