@@ -68,6 +68,13 @@ async def close_async_connections():
     await sync_to_async(connections.close_all)()
 
 
+@pytest.fixture(autouse=True)
+def unconfigured_tasks(monkeypatch):
+    """The tasks' services are module state (Celery calls a task by name, so a worker sets
+    them once): each test starts without them, and whatever it configures is undone after."""
+    monkeypatch.setattr("claims_service.intake.tasks._configuration.services", None)
+
+
 @pytest.fixture
 def policies(db):
     for policy in seed_policies(timezone.localdate()):

@@ -1,6 +1,7 @@
 from contextlib import nullcontext
 from dataclasses import replace
 from datetime import timedelta
+from uuid import UUID
 
 import pytest
 from asgiref.sync import async_to_sync, sync_to_async
@@ -19,6 +20,7 @@ from claims_agent.engine import ConversationEngine, RetryingChatModel, templates
 from claims_agent.engine.summary import RECORD_KEY_POINTS
 from claims_agent.ports import NullTelemetry
 from claims_service.intake import tasks
+from claims_service.intake.presenters import claim_updated_event
 from claims_service.intake.repository import (
     DjangoConversationRepository,
     DjangoPolicyCatalog,
@@ -34,6 +36,7 @@ from claims_service.intake.tasks import (
     sweep_abandoned_conversations,
 )
 from tests.engine.fakes import LLM_DOWN, call, no_sleep, say
+from tests.service.test_consumer import started_conversation
 from tests.support import COMPLETE, HAPPY_POLICY, NOW
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -50,7 +53,7 @@ def queued() -> list[str]:
 
 
 @pytest.fixture(autouse=True)
-def task_services(repository, llm, notified, queued) -> TaskServices:
+def task_services(unconfigured_tasks, repository, llm, notified, queued) -> TaskServices:
     services = TaskServices(
         repository=repository,
         telemetry=NullTelemetry(),
@@ -239,6 +242,24 @@ async def test_a_turn_on_a_conversation_swept_meanwhile_is_told_it_closed(
     assert claim.closure_reason is ClosureReason.ABANDONED
     assert [reply.text for reply in result.replies] == [templates.already_closed(claim).text]
     assert llm.requests == []
+
+
+async def test_a_swept_conversation_is_pushed_to_its_open_socket(
+    application, repository, task_services
+):
+    # The real notification, through the channel layer to the consumer watching the group.
+    tasks.configure(replace(task_services, notify=tasks.notify_watchers))
+    communicator, conversation_id = await started_conversation(application)
+    started = await repository.get(UUID(conversation_id))
+    idle_since = timezone.now() - ABANDONED_AFTER - timedelta(minutes=1)
+    await repository.save(started.model_copy(update={"updated_at": idle_since}))
+
+    assert await sync_to_async(sweep_abandoned_conversations)() == 1
+
+    swept = await repository.get(UUID(conversation_id))
+    assert await communicator.receive_json_from(timeout=5) == claim_updated_event(swept)
+    assert swept.claim.closure_reason is ClosureReason.ABANDONED
+    await communicator.disconnect()
 
 
 def test_a_summary_that_keeps_failing_is_recorded_and_not_requeued(
