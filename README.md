@@ -46,7 +46,7 @@ browser ──Ogg Opus────▶ WebSocket consumer ──▶ STT ──▶
 
 **Code owns the flow; the LLM converses** ([ADR-0002](docs/adr/0002-code-owns-the-flow-llm-converses.md)). On each turn the LLM talks freely and proposes field values through an `update_claim` tool. Python validates them (policy exists, plate matches it, loss not in the future, province is one of the 52, …) and keeps only valid values. It also decides when the claim is complete, its urgency (from injuries and an immobilized vehicle, never asked), whether the policy covers the loss window, and every status transition. The LLM gets each rejection back as a specific error and explains it to the declarant. Three failures on the same field escalate the claim to an adjuster.
 
-**Critical messages come from templates** ([ADR-0005](docs/adr/0005-critical-messages-from-templates.md)): the read-back, the reference, coverage decisions, the 112 advice and closings. Whenever the claim changes in a way only code may announce, the engine stops the LLM loop and speaks a template instead. Before any text reaches the TTS, the LLM's replies too, code spells its identifiers out: letters one by one and digits in pairs ("A, U, T, 48, 21, 39, 07"), so the voice neither reads them as thousands nor guesses a word. A regex check flags LLM replies that mention references, confirmation, coverage, money or identifiers nobody gave; it records a Langfuse score and a warning, without blocking the reply.
+**Critical messages come from templates** ([ADR-0005](docs/adr/0005-critical-messages-from-templates.md)): the read-back, the reference, coverage decisions, the 112 advice and closings. Whenever the claim changes in a way only code may announce, the engine stops the LLM loop and speaks a template instead. The read-back is a short spoken summary of the loss (about 15 seconds): the policy number and plate were already checked against the policy, and the whole claim is on screen; the LLM echoes the date and place back as it records them. Before any text reaches the TTS, the LLM's replies too, code spells its identifiers out: letters one by one and digits in pairs ("A, U, T, 48, 21, 39, 07"), so the voice neither reads them as thousands nor guesses a word. A regex check flags LLM replies that mention references, confirmation, coverage, money or identifiers nobody gave; it records a Langfuse score and a warning, without blocking the reply.
 
 **Packages.** `domain/` is pure (claim model, validators, lifecycle, coverage, provinces) and imports nothing else. `engine/` (turn loop, prompts, tools, templates, voice, summary) depends only on `domain/` and `ports/` (async interfaces for the LLM, speech, storage and telemetry). `adapters/` implements the ports for OpenRouter, Langfuse and in-memory storage. The Django project `claims_service/` stays at the edge: ORM repository, ninja API, Channels consumer and Celery tasks.
 
@@ -98,7 +98,7 @@ All three go through OpenRouter, each behind a port:
 
 ## Potential improvements
 
-- Real-time voice with streaming and barge-in. Turns are push-to-talk today, and a long read-back takes about 30 seconds of audio.
+- Real-time voice with streaming and barge-in. Turns are push-to-talk today.
 - Replicas behind a load balancer; rate limits and quotas per provider; model fallback.
 - More languages; other insurance lines (home).
 - Real identity verification and authentication (staff access to the conversation list, declarants resuming from another device); resuming a conversation after it closes; geocoding the loss location.

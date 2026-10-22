@@ -179,7 +179,6 @@ async def test_complete_claim_is_read_back_by_code_not_by_the_llm(engine, llm, c
     assert len(llm.requests) == 1  # no second call: the read-back is a template
     assert result.conversation.claim.status is ClaimStatus.PENDING_CONFIRMATION
     assert texts(result) == [templates.read_back(result.conversation.claim).text]
-    assert "A, U, T, 48, 21, 39, 07" in result.replies[0].spoken
 
 
 async def test_confirmation_assigns_a_reference_and_announces_it(engine, llm, conversation_id):

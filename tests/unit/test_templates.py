@@ -79,13 +79,63 @@ def test_multi_day_loss_window_is_shown_in_madrid_time():
     )
 
 
-def test_read_back_ends_the_free_text_description_with_a_full_stop():
+def test_the_read_back_is_a_short_summary_of_the_loss():
     claim = apply_update(Claim(), COMPLETE, policy=HAPPY_POLICY, now=NOW).claim
-    assert "Descripción: Una piedra que saltó de un camión rompió el parabrisas.\n" in (
-        read_back(claim).text
+
+    assert read_back(claim).text == (
+        "Resumo su declaración: una rotura de lunas, el 19 de octubre de 2026 a las 19:00, "
+        "en A-3, Arganda del Rey (Madrid). No hubo heridos y el vehículo puede circular. "
+        "¿Es correcto?"
     )
-    already_punctuated = claim.model_copy(update={"description": "Me dieron un golpe."})
-    assert "golpe.\n" in read_back(already_punctuated).text
+
+
+def test_the_read_back_of_a_collision_says_the_other_vehicle_and_the_friendly_report():
+    collision = COMPLETE | {
+        "loss_type": "collision",
+        "loss_location": {"municipality": "Valencia", "province": "Valencia", "country": "España"},
+        "injuries": True,
+        "vehicle_immobilized": True,
+        "other_vehicle_involved": True,
+        "other_vehicle_plate": "1234 BCD",
+        "friendly_report_signed": False,
+    }
+    claim = apply_update(Claim(), collision, policy=HAPPY_POLICY, now=NOW).claim
+
+    message = read_back(claim)
+
+    assert message.text == (
+        "Resumo su declaración: una colisión, el 19 de octubre de 2026 a las 19:00, "
+        "en Valencia. Hubo heridos y el vehículo quedó inmovilizado. "
+        "Hubo otro vehículo implicado, matrícula 1234 BCD, y no firmaron parte amistoso. "
+        "¿Es correcto?"
+    )
+    assert "matrícula 12, 34, B, C, D," in message.spoken
+
+
+def test_the_read_back_of_a_theft_says_whether_it_was_reported():
+    theft = COMPLETE | {"loss_type": "theft", "police_report_filed": True}
+    claim = apply_update(Claim(), theft, policy=HAPPY_POLICY, now=NOW).claim
+
+    text = read_back(claim).text
+
+    assert text.startswith("Resumo su declaración: un robo,")
+    assert "Ya ha presentado denuncia. ¿Es correcto?" in text
+
+
+def test_the_read_back_leaves_out_what_was_checked_or_said_by_the_declarant():
+    claim = apply_update(Claim(), COMPLETE, policy=HAPPY_POLICY, now=NOW).claim
+
+    text = read_back(claim).text
+
+    for left_out in ("AUT-", "4721", "María", "piedra"):
+        assert left_out not in text
+
+
+def test_a_corrected_description_ends_with_a_full_stop():
+    heard = apply_update(Claim(), COMPLETE, policy=HAPPY_POLICY, now=NOW).claim
+    claim = heard.model_copy(update={"description": "Me dieron un golpe"})
+
+    assert "- Descripción: Me dieron un golpe.\n" in read_back_changes(heard, claim).text
 
 
 def corrected(claim: Claim, update: dict) -> Claim:
@@ -132,12 +182,13 @@ def test_a_corrected_identifier_is_spelled_out_for_speech():
     assert "Matrícula: 47, 21, K, L, N." in message.spoken
 
 
-def test_the_read_back_is_spoken_without_the_list_dashes():
-    claim = corrected(Claim(), COMPLETE)
+def test_a_corrections_list_is_spoken_without_its_dashes():
+    heard = corrected(Claim(), COMPLETE)
+    claim = corrected(heard, {"injuries": True, "vehicle_immobilized": True})
 
-    message = read_back(claim)
+    message = read_back_changes(heard, claim)
 
-    assert "\n- Póliza" in message.text
+    assert "\n- Heridos: sí." in message.text
     assert "- " not in message.spoken
 
 

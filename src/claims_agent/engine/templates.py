@@ -45,6 +45,14 @@ LOSS_TYPE_NAMES: dict[LossType, str] = {
     LossType.PARKED_DAMAGE: "daños con el vehículo aparcado",
     LossType.OTHER: "otro tipo de siniestro",
 }
+# As the read-back says them: "Resumo su declaración: una colisión, …".
+_LOSS_TYPE_SUMMARY: dict[LossType, str] = {
+    LossType.COLLISION: "una colisión",
+    LossType.THEFT: "un robo",
+    LossType.BROKEN_GLASS: "una rotura de lunas",
+    LossType.PARKED_DAMAGE: "daños con el vehículo aparcado",
+    LossType.OTHER: "un siniestro",
+}
 
 
 @dataclass(frozen=True)
@@ -160,38 +168,43 @@ def fixed_messages() -> tuple[BotMessage, ...]:
 
 
 def read_back(incomplete: Claim) -> BotMessage:
-    """The complete claim, for the declarant to confirm. Raises `IncompleteClaimError` if
-    anything is missing."""
+    """A short summary of the loss, for the declarant to confirm the complete claim: what,
+    when and where, injuries and damage, the other vehicle or the police report. Raises
+    `IncompleteClaimError` if anything is missing.
+
+    About 15 seconds of speech. The policy number and the plate are left out because they
+    were checked against the policy; names and the description because they are the
+    declarant's own words. All of it is on screen."""
     claim = incomplete.complete()
     location = claim.loss_location
     place = ", ".join(p for p in (location.way, location.municipality) if p)
-    place = f"{place} ({location.province})"
-    driver = "el titular de la póliza" if claim.driver_is_policyholder else claim.driver_name
+    if location.province != location.municipality:
+        place = f"{place} ({location.province})"
+    injuries = "Hubo heridos" if claim.injuries else "No hubo heridos"
+    vehicle = "quedó inmovilizado" if claim.vehicle_immobilized else "puede circular"
 
-    lines = [
-        f"Póliza: {claim.policy_number}, matrícula {display_plate(claim.plate)}.",
-        f"Declarante: {claim.declarant_name}. Conductor: {driver}.",
+    sentences = [
         (
-            f"Siniestro: {LOSS_TYPE_NAMES[claim.loss_type]}, "
+            f"Resumo su declaración: {_LOSS_TYPE_SUMMARY[claim.loss_type]}, "
             f"{format_loss_window(claim.loss_window)}, en {place}."
         ),
-        f"Descripción: {_sentence(claim.description)}",
-        (
-            f"Heridos: {_yes_no(value=claim.injuries)}. "
-            f"Vehículo inmovilizado: {_yes_no(value=claim.vehicle_immobilized)}."
-        ),
+        f"{injuries} y el vehículo {vehicle}.",
     ]
     if claim.loss_type is LossType.COLLISION:
         # Set exactly when another vehicle was involved.
         if (plate := claim.other_vehicle_plate) is not None:
-            report = f"Parte amistoso firmado: {_yes_no(value=claim.friendly_report_signed)}."
-            lines.append(f"Otro vehículo implicado, matrícula {display_plate(plate)}. {report}")
+            signed = "firmaron" if claim.friendly_report_signed else "no firmaron"
+            sentences.append(
+                f"Hubo otro vehículo implicado, matrícula {display_plate(plate)}, "
+                f"y {signed} parte amistoso."
+            )
         else:
-            lines.append("No hubo otro vehículo implicado.")
+            sentences.append("No hubo otro vehículo implicado.")
     if claim.loss_type is LossType.THEFT:
-        lines.append(f"Denuncia presentada: {_yes_no(value=claim.police_report_filed)}.")
-
-    return _listed("Le leo los datos de la declaración:", lines, "¿Es todo correcto?")
+        filed = "Ya ha presentado" if claim.police_report_filed else "Aún no ha presentado"
+        sentences.append(f"{filed} denuncia.")
+    sentences.append("¿Es correcto?")
+    return BotMessage(" ".join(sentences))
 
 
 def _listed(intro: str, lines: list[str], outro: str) -> BotMessage:
