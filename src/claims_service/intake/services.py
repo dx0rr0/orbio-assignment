@@ -18,7 +18,7 @@ from claims_agent.adapters.openrouter import (
     OpenRouterSpeechToText,
     OpenRouterTextToSpeech,
 )
-from claims_agent.engine import ConversationEngine, Voice
+from claims_agent.engine import ConversationEngine, RetryingChatModel, Voice
 from claims_agent.ports import (
     ChatModel,
     ConversationRepository,
@@ -154,7 +154,7 @@ def for_consumer() -> ConsumerServices:
     stt, tts = speech_from_settings(resources)
     return ConsumerServices(
         engine=ConversationEngine(
-            llm=llm,
+            llm=RetryingChatModel(llm),
             conversations=repository,
             policies=DjangoPolicyCatalog(),
             references=PostgresReferenceSequence(),

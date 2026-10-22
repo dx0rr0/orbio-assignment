@@ -14,7 +14,7 @@ from datetime import datetime
 from claims_agent.adapters.memory import InMemoryConversationRepository
 from claims_agent.adapters.openrouter import OpenRouterChatModel
 from claims_agent.domain import MADRID
-from claims_agent.engine import ConversationEngine, TurnResult
+from claims_agent.engine import ConversationEngine, RetryingChatModel, TurnResult
 from claims_agent.seed import seed_policies
 
 
@@ -26,7 +26,7 @@ def show(result: TurnResult) -> None:
 async def main(utterances: list[str]) -> None:
     repository = InMemoryConversationRepository(seed_policies(datetime.now(MADRID).date()))
     engine = ConversationEngine(
-        llm=OpenRouterChatModel.create(os.environ["OPENROUTER_API_KEY"]),
+        llm=RetryingChatModel(OpenRouterChatModel.create(os.environ["OPENROUTER_API_KEY"])),
         conversations=repository,
         policies=repository,
         references=repository,

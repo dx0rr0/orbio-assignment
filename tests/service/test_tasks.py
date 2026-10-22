@@ -15,7 +15,7 @@ from claims_agent.domain import (
     apply_update,
     confirm,
 )
-from claims_agent.engine import ConversationEngine, templates
+from claims_agent.engine import ConversationEngine, RetryingChatModel, templates
 from claims_agent.engine.summary import RECORD_KEY_POINTS
 from claims_agent.ports import NullTelemetry
 from claims_service.intake import tasks
@@ -227,11 +227,10 @@ async def test_a_turn_on_a_conversation_swept_meanwhile_is_told_it_closed(
 ):
     idle = await idle_conversation(repository)
     engine = ConversationEngine(
-        llm=llm,
+        llm=RetryingChatModel(llm, sleep=no_sleep),
         conversations=SweptAfterLoading(),
         policies=DjangoPolicyCatalog(),
         references=PostgresReferenceSequence(),
-        sleep=no_sleep,
     )
 
     result = await engine.handle_text(idle.id, "Hola")

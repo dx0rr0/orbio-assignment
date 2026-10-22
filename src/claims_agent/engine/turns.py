@@ -9,7 +9,7 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import UUID
@@ -61,8 +61,6 @@ MAX_LLM_FAILURES = 3
 MAX_REFUSALS = 2
 # LLM calls per turn: tool rounds plus the final reply.
 MAX_LLM_ROUNDS = 4
-# Waits between attempts of a failed LLM call; one more attempt than waits.
-LLM_RETRY_DELAYS = (0.5, 1.5)
 # Seconds the LLM part of a turn may take, retries included, before the agent apologises.
 TURN_DEADLINE_SECONDS = 25.0
 
@@ -141,6 +139,9 @@ def _prepared_reply(calls: Sequence[ToolCall], results: Sequence[ToolResult]) ->
 
 
 class ConversationEngine:
+    """`llm` is called once per completion the turn needs: wrap it in a `RetryingChatModel` for
+    transient errors to be retried."""
+
     def __init__(
         self,
         *,
@@ -150,7 +151,6 @@ class ConversationEngine:
         references: ReferenceSequence,
         telemetry: Telemetry | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(MADRID),
-        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         turn_deadline: float = TURN_DEADLINE_SECONDS,
     ) -> None:
         self._llm = llm
@@ -159,7 +159,6 @@ class ConversationEngine:
         self._references = references
         self._telemetry = telemetry or NullTelemetry()
         self._clock = clock
-        self._sleep = sleep
         self._turn_deadline = turn_deadline
 
     async def start(self) -> TurnResult:
@@ -328,20 +327,12 @@ class ConversationEngine:
     async def _complete(self, conversation: Conversation, now: datetime) -> Completion:
         claim = conversation.claim
         system = system_prompt(claim, await self._policy_of(claim), now)
-        delays = iter(LLM_RETRY_DELAYS)
-        attempt = 0
-        while True:
-            attempt += 1
-            try:
-                return await self._llm.complete(
-                    system=system, messages=conversation.messages, tools=tools.TOOLS
-                )
-            except LLMError as error:
-                logger.warning("LLM call failed (attempt %d): %s", attempt, error)
-                delay = next(delays, None)
-                if delay is None:
-                    raise _LLMUnavailableError(conversation) from error
-                await self._sleep(delay)
+        try:
+            return await self._llm.complete(
+                system=system, messages=conversation.messages, tools=tools.TOOLS
+            )
+        except LLMError as error:
+            raise _LLMUnavailableError(conversation) from error
 
     # --- tools ----------------------------------------------------------------------------
 

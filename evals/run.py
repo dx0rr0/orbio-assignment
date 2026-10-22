@@ -16,7 +16,7 @@ from pathlib import Path
 from claims_agent.adapters.memory import InMemoryConversationRepository
 from claims_agent.adapters.openrouter import OpenRouterChatModel
 from claims_agent.domain import MADRID, Claim, Message, Role
-from claims_agent.engine import ConversationEngine
+from claims_agent.engine import ConversationEngine, RetryingChatModel
 from claims_agent.engine.hallucinations import check_reply
 from claims_agent.seed import seed_policies
 from evals.scenarios import SCENARIOS, Scenario
@@ -83,7 +83,10 @@ def check(scenario: Scenario, claim: Claim) -> list[str]:
 async def run(scenario: Scenario, llm: OpenRouterChatModel) -> Result:
     repository = InMemoryConversationRepository(seed_policies(datetime.now(MADRID).date()))
     engine = ConversationEngine(
-        llm=llm, conversations=repository, policies=repository, references=repository
+        llm=RetryingChatModel(llm),
+        conversations=repository,
+        policies=repository,
+        references=repository,
     )
     declarant = SimulatedDeclarant(llm, scenario.persona)
 

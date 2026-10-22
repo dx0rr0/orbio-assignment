@@ -14,9 +14,10 @@ from claims_agent.domain import (
     Role,
     close,
 )
-from claims_agent.engine import ConversationEngine, templates, tools
+from claims_agent.engine import ConversationEngine, RetryingChatModel, templates, tools
+from claims_agent.engine.retrying import LLM_RETRY_DELAYS
 from claims_agent.engine.tools import CONFIRM_CLAIM, CONFIRM_VALUE, DECLARANT_REFUSES, UPDATE_CLAIM
-from claims_agent.engine.turns import LLM_RETRY_DELAYS, MAX_LLM_FAILURES, MAX_REPEAT_REQUESTS
+from claims_agent.engine.turns import MAX_LLM_FAILURES, MAX_REPEAT_REQUESTS
 from claims_agent.seed import seed_policies
 from tests.engine.fakes import LLM_DOWN, ScriptedLLM, call, calls, no_sleep, say
 from tests.support import COMPLETE, IDENTIFICATION, NEW_POLICY, NOW
@@ -97,12 +98,11 @@ class LookupRecorder(InMemoryConversationRepository):
 async def test_the_policy_is_looked_up_only_for_a_number_and_not_used_before_the_plate(llm):
     repository = LookupRecorder()
     engine = ConversationEngine(
-        llm=llm,
+        llm=RetryingChatModel(llm, sleep=no_sleep),
         conversations=repository,
         policies=repository,
         references=repository,
         clock=lambda: NOW,
-        sleep=no_sleep,
     )
     conversation_id = (await engine.start()).conversation.id
     llm.then(call(UPDATE_CLAIM, {"declarant_name": "María López"}), say("¿Su póliza?"))
@@ -492,12 +492,11 @@ class Clock:
 async def test_closed_conversation_does_not_call_the_llm(llm, repository):
     clock = Clock()
     engine = ConversationEngine(
-        llm=llm,
+        llm=RetryingChatModel(llm, sleep=no_sleep),
         conversations=repository,
         policies=repository,
         references=repository,
         clock=clock,
-        sleep=no_sleep,
     )
     conversation_id = (await engine.start()).conversation.id
     llm.then(call(UPDATE_CLAIM, COMPLETE), call(CONFIRM_CLAIM))
@@ -527,12 +526,11 @@ async def test_a_turn_marks_the_conversation_active_before_the_llm_replies(repos
 
     llm = Observing().then(say("¿Me indica su póliza?"))
     engine = ConversationEngine(
-        llm=llm,
+        llm=RetryingChatModel(llm, sleep=no_sleep),
         conversations=repository,
         policies=repository,
         references=repository,
         clock=clock,
-        sleep=no_sleep,
     )
     conversation_id = (await engine.start()).conversation.id
     clock.now += timedelta(minutes=5)
@@ -812,7 +810,7 @@ async def test_a_turn_that_takes_too_long_apologises(llm, repository, conversati
             await asyncio.Event().wait()  # never answers
 
     engine = ConversationEngine(
-        llm=HangingLLM(),
+        llm=RetryingChatModel(HangingLLM()),
         conversations=repository,
         policies=repository,
         references=repository,
@@ -838,7 +836,7 @@ async def test_tool_results_survive_the_turn_deadline(llm, repository, conversat
             return call(UPDATE_CLAIM, IDENTIFICATION)
 
     engine = ConversationEngine(
-        llm=SlowAfterTools(),
+        llm=RetryingChatModel(SlowAfterTools()),
         conversations=repository,
         policies=repository,
         references=repository,

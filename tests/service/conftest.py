@@ -8,7 +8,7 @@ from asgiref.sync import sync_to_async
 from django.db import connections
 from django.utils import timezone
 
-from claims_agent.engine import ConversationEngine, Voice
+from claims_agent.engine import ConversationEngine, RetryingChatModel, Voice
 from claims_agent.ports import NullTelemetry, SpeechError
 from claims_agent.seed import seed_policies
 from claims_service.intake import access
@@ -97,12 +97,11 @@ def repository() -> DjangoConversationRepository:
 @pytest.fixture
 def engine(llm, repository) -> ConversationEngine:
     return ConversationEngine(
-        llm=llm,
+        llm=RetryingChatModel(llm, sleep=no_sleep),
         conversations=repository,
         policies=DjangoPolicyCatalog(),
         references=PostgresReferenceSequence(),
         telemetry=RecordingTelemetry(),
-        sleep=no_sleep,
     )
 
 
