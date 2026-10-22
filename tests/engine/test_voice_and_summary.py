@@ -16,7 +16,12 @@ from claims_agent.domain import (
 from claims_agent.engine import BotMessage, Voice, templates
 from claims_agent.engine.summary import RECORD_KEY_POINTS, SummaryError, summarize
 from claims_agent.engine.tools import CONFIRM_CLAIM, UPDATE_CLAIM
-from claims_agent.engine.voice import MIN_PIECE_SECONDS, speech_chunks
+from claims_agent.engine.voice import (
+    MIN_PIECE_SECONDS,
+    SAMPLE_BYTES,
+    SENTENCE_PAUSE_SECONDS,
+    speech_chunks,
+)
 from claims_agent.ports import NullTelemetry, Span, SpeechError
 from tests.engine.fakes import COMPLETE, LLM_DOWN, NOW, call, say
 
@@ -154,11 +159,11 @@ async def test_a_failed_synthesis_is_not_kept():
 
 
 def test_speech_is_cut_into_sentences_joining_short_pieces():
-    text = "Le leo los datos de la declaración: Declarante: María López. ¿Es todo correcto?"
+    text = "Le leo los datos: Declarante: María López. Heridos: no. Vehículo inmovilizado: no."
 
     assert speech_chunks(text) == [
-        "Le leo los datos de la declaración:",
-        "Declarante: María López. ¿Es todo correcto?",
+        "Le leo los datos: Declarante: María López.",
+        "Heridos: no. Vehículo inmovilizado: no.",
     ]
 
 
@@ -171,8 +176,8 @@ def test_a_short_last_piece_joins_the_chunk_before_it():
 
 
 def test_times_and_spelled_identifiers_are_not_cut():
-    assert speech_chunks("Fue a las 19:00, póliza A U T, 4 8 2 1.") == [
-        "Fue a las 19:00, póliza A U T, 4 8 2 1."
+    assert speech_chunks("Fue a las 19:00, póliza A, U, T, 48, 21.") == [
+        "Fue a las 19:00, póliza A, U, T, 48, 21."
     ]
 
 
@@ -198,8 +203,12 @@ async def test_sentences_are_synthesized_at_once_and_spoken_in_order():
     voice = Voice(Speech(), SecondFirst())
     audio = voice.speak_in_chunks([BotMessage(FIRST), BotMessage(SECOND)])
 
-    # Pieces shorter than the minimum are sent together at the end of their sentence.
-    assert await asyncio.wait_for(spoken(audio), timeout=1) == [b"1a1b", b"2a"]
+    # Pieces shorter than the minimum are sent together at the end of their sentence, and a
+    # pause of silence goes between sentences.
+    pause = voice.sentence_pause
+    assert await asyncio.wait_for(spoken(audio), timeout=1) == [b"1a1b", pause, b"2a"]
+    assert pause == bytes(len(pause))
+    assert len(pause) == round(voice.sample_rate * SENTENCE_PAUSE_SECONDS) * SAMPLE_BYTES
 
 
 async def test_failed_synthesis_ends_the_speech_there():

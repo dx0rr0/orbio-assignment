@@ -14,9 +14,11 @@ from claims_agent.ports import NullTelemetry, SpeechError, SpeechToText, Telemet
 
 logger = logging.getLogger(__name__)
 
-# Where a spoken text may be cut into chunks: after the end of a sentence or a colon.
-_CHUNK_BREAK = re.compile(r"(?<=[.:!?…])\s+")
-# Shorter pieces ("Conductor:", "Gracias.") join the next one rather than being synthesized
+# Where a spoken text may be cut into chunks: after the end of a sentence. Not after a colon,
+# which would part a label from its value ("Vehículo inmovilizado:" | "no."): the TTS paused
+# there and clipped the next word.
+_CHUNK_BREAK = re.compile(r"(?<=[.!?…])\s+")
+# Shorter pieces ("Heridos: no.", "Gracias.") join the next one rather than being synthesized
 # alone, which would sound clipped.
 MIN_CHUNK_CHARS = 20
 # Speech is sent on in pieces of at least this much audio rather than in every network read
@@ -24,6 +26,9 @@ MIN_CHUNK_CHARS = 20
 MIN_PIECE_SECONDS = 0.15
 # Of 16-bit PCM.
 SAMPLE_BYTES = 2
+# Silence added between the sentences of a reply, on top of the ~0.35 s each synthesis ends
+# with: without it a read-back runs its lines together, as if each full stop were a comma.
+SENTENCE_PAUSE_SECONDS = 0.4
 
 
 def speech_chunks(text: str) -> list[str]:
@@ -99,11 +104,11 @@ class Voice:
                 yield piece
 
     async def speak_in_chunks(self, replies: Sequence[BotMessage]) -> AsyncGenerator[bytes]:
-        """The replies of a turn spoken by sentence, yielded in pieces in order. Every sentence
-        is synthesized at once, and the pieces of each are yielded as they arrive once those of
-        the sentences before it are out, so the first sentence plays while the rest is still
-        being synthesized. A failed synthesis ends the audio there (the text of the replies is
-        sent anyway)."""
+        """The replies of a turn spoken by sentence, yielded in pieces in order, with a pause
+        between sentences. Every sentence is synthesized at once, and the pieces of each are
+        yielded as they arrive once those of the sentences before it are out, so the first
+        sentence plays while the rest is still being synthesized. A failed synthesis ends the
+        audio there (the text of the replies is sent anyway)."""
         texts = speech_chunks(" ".join(reply.spoken for reply in replies))
         async with aclosing(self._speak_in_order(texts)) as pieces:
             async for piece in pieces:
@@ -118,7 +123,9 @@ class Voice:
             for text, queue in zip(texts, queues, strict=True)
         ]
         try:
-            for task, queue in zip(synthesis, queues, strict=True):
+            for index, (task, queue) in enumerate(zip(synthesis, queues, strict=True)):
+                if index:
+                    yield self.sentence_pause
                 while (piece := await queue.get()) is not None:
                     yield piece
                 if not await task:
@@ -150,6 +157,10 @@ class Voice:
             if text in self._fixed:
                 self._kept[text] = tuple(received)
             return True
+
+    @property
+    def sentence_pause(self) -> bytes:
+        return bytes(round(self.sample_rate * SENTENCE_PAUSE_SECONDS) * SAMPLE_BYTES)
 
     @property
     def min_piece_bytes(self) -> int:

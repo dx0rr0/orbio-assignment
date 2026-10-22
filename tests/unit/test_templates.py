@@ -4,14 +4,13 @@ import pytest
 
 from claims_agent.domain import MADRID, Claim, IncompleteClaimError, LossWindow, apply_update
 from claims_agent.engine.templates import (
+    BotMessage,
     confirm_coverage_value,
     display_plate,
     format_loss_window,
     read_back,
     read_back_changes,
-    spoken_plate,
-    spoken_policy_number,
-    spoken_reference,
+    spell_identifiers,
 )
 from tests.engine.fakes import COMPLETE, HAPPY_POLICY, NOW
 
@@ -20,10 +19,28 @@ def window(start: datetime, end: datetime | None = None) -> LossWindow:
     return LossWindow(start=start, end=end or start)
 
 
-def test_identifiers_are_spelled_out_for_speech():
-    assert spoken_policy_number("AUT-48213907") == "A U T, 4 8 2 1, 3 9 0 7"
-    assert spoken_plate("4721KLM") == "4 7 2 1, K L M"
-    assert spoken_reference("SIN-2026-000123") == "S I N, 2026, 0 0 0 1 2 3"
+@pytest.mark.parametrize(
+    ("text", "spoken"),
+    [
+        ("Póliza AUT-48213907.", "Póliza A, U, T, 48, 21, 39, 07."),
+        ("su póliza AUT48213907 y", "su póliza A, U, T, 48, 21, 39, 07 y"),
+        ("matrícula 4721 KLM.", "matrícula 47, 21, K, L, M."),
+        ("matrícula 4721KLM.", "matrícula 47, 21, K, L, M."),
+        ("referencia SIN-2026-000123.", "referencia S, I, N, 2026, 00, 01, 23."),
+    ],
+)
+def test_identifiers_are_spelled_out_for_speech(text: str, spoken: str):
+    assert spell_identifiers(text) == spoken
+
+
+def test_other_numbers_are_left_for_the_tts_to_read():
+    text = "El 21 de octubre de 2026 a las 09:00, en la calle Alcalá 1234."
+    assert spell_identifiers(text) == text
+
+
+def test_the_llms_replies_are_spoken_with_their_identifiers_spelled_out():
+    reply = BotMessage("Su póliza es AUT-48213907 y su matrícula 4721 KLM.", scripted=False)
+    assert reply.spoken == "Su póliza es A, U, T, 48, 21, 39, 07 y su matrícula 47, 21, K, L, M."
 
 
 def test_current_plates_are_displayed_with_a_space_and_others_as_they_are():
@@ -41,6 +58,16 @@ def test_same_day_loss_window():
     start = datetime(2026, 10, 19, 8, 0, tzinfo=MADRID)
     assert format_loss_window(window(start, start.replace(hour=14))) == (
         "el 19 de octubre de 2026, entre las 08:00 y las 14:00"
+    )
+
+
+def test_a_whole_day_is_read_without_hours():
+    start = datetime(2026, 10, 21, 0, 0, tzinfo=MADRID)
+    assert format_loss_window(window(start, start.replace(hour=23, minute=59))) == (
+        "el 21 de octubre de 2026, sin hora concreta"
+    )
+    assert format_loss_window(window(start, datetime(2026, 10, 22, 23, 59, tzinfo=MADRID))) == (
+        "entre el 21 de octubre de 2026 y el 22 de octubre de 2026, sin hora concreta"
     )
 
 
@@ -102,7 +129,16 @@ def test_a_corrected_identifier_is_spelled_out_for_speech():
     message = read_back_changes(heard, claim)
 
     assert "- Matrícula: 4721 KLN." in message.text
-    assert "Matrícula: 4 7 2 1, K L N." in message.spoken
+    assert "Matrícula: 47, 21, K, L, N." in message.spoken
+
+
+def test_the_read_back_is_spoken_without_the_list_dashes():
+    claim = corrected(Claim(), COMPLETE)
+
+    message = read_back(claim)
+
+    assert "\n- Póliza" in message.text
+    assert "- " not in message.spoken
 
 
 def test_a_correction_that_changes_nothing_says_so():

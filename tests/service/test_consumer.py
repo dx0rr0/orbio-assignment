@@ -154,6 +154,7 @@ async def test_a_reply_is_spoken_by_sentence_as_each_one_is_ready(application, l
         "bot_message",
         "claim_updated",
         "audio",
+        "audio_continued",  # the pause between the sentences
         "audio_continued",
         "audio_end",
     ]
