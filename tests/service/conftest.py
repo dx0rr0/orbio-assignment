@@ -8,12 +8,16 @@ from asgiref.sync import sync_to_async
 from django.db import connections
 from django.utils import timezone
 
-from claims_agent.engine import ConversationEngine, Voice
+from claims_agent.engine import ConversationEngine, RetryingChatModel, Voice
 from claims_agent.ports import NullTelemetry, SpeechError
 from claims_agent.seed import seed_policies
 from claims_service.intake import access
 from claims_service.intake.models import PolicyRecord
-from claims_service.intake.repository import DjangoConversationRepository
+from claims_service.intake.repository import (
+    DjangoConversationRepository,
+    DjangoPolicyCatalog,
+    PostgresReferenceSequence,
+)
 from claims_service.intake.routing import websocket_application
 from claims_service.intake.services import ConsumerServices
 from tests.engine.fakes import RecordingTelemetry, ScriptedLLM, no_sleep
@@ -64,6 +68,13 @@ async def close_async_connections():
     await sync_to_async(connections.close_all)()
 
 
+@pytest.fixture(autouse=True)
+def unconfigured_tasks(monkeypatch):
+    """The tasks' services are module state (Celery calls a task by name, so a worker sets
+    them once): each test starts without them, and whatever it configures is undone after."""
+    monkeypatch.setattr("claims_service.intake.tasks._configuration.services", None)
+
+
 @pytest.fixture
 def policies(db):
     for policy in seed_policies(timezone.localdate()):
@@ -93,7 +104,11 @@ def repository() -> DjangoConversationRepository:
 @pytest.fixture
 def engine(llm, repository) -> ConversationEngine:
     return ConversationEngine(
-        llm=llm, repository=repository, telemetry=RecordingTelemetry(), sleep=no_sleep
+        llm=RetryingChatModel(llm, sleep=no_sleep),
+        conversations=repository,
+        policies=DjangoPolicyCatalog(),
+        references=PostgresReferenceSequence(),
+        telemetry=RecordingTelemetry(),
     )
 
 

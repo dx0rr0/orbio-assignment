@@ -10,9 +10,9 @@ from channels.routing import URLRouter
 from channels.testing import WebsocketCommunicator
 from django.urls import path
 
+from claims_agent.domain import MAX_REPEAT_REQUESTS
 from claims_agent.engine import templates
 from claims_agent.engine.tools import CONFIRM_CLAIM, UPDATE_CLAIM
-from claims_agent.engine.turns import MAX_REPEAT_REQUESTS
 from claims_agent.ports import ConcurrentUpdateError, SpeechError
 from claims_service.intake import consumers
 from claims_service.intake.consumers import NOT_FOUND_CLOSE_CODE, ConversationConsumer

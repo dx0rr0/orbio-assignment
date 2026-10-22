@@ -14,6 +14,7 @@ from claims_agent.domain.claim import (
     Claim,
     ClaimStatus,
     ClosureReason,
+    CoverageIssue,
     LossType,
     PendingField,
 )
@@ -194,15 +195,15 @@ def identified_policy(claim: Claim, policy: Policy | None) -> Policy | None:
     return policy
 
 
-def _coverage_issue(claim: Claim, policy: Policy | None) -> ClosureReason | None:
+def _coverage_issue(claim: Claim, policy: Policy | None) -> CoverageIssue | None:
     if claim.loss_location is not None and not claim.loss_location.in_spain:
-        return ClosureReason.OUTSIDE_SPAIN
+        return CoverageIssue.OUTSIDE_SPAIN
     if claim.loss_window is not None and policy is not None:
         match coverage(claim.loss_window, policy):
             case Coverage.NOT_COVERED:
-                return ClosureReason.OUTSIDE_COVERAGE_PERIOD
+                return CoverageIssue.OUTSIDE_COVERAGE_PERIOD
             case Coverage.PARTIAL:
-                return ClosureReason.PARTIAL_COVERAGE
+                return CoverageIssue.PARTIAL_COVERAGE
     return None
 
 
@@ -220,15 +221,15 @@ def _next_status(claim: Claim, policy: Policy | None) -> Claim:
         status = (
             ClaimStatus.IN_PROGRESS if claim.missing_fields else ClaimStatus.PENDING_CONFIRMATION
         )
-    return claim.model_copy(update={"status": status, "coverage_issue": issue})
+    return _transitioned(claim, {"status": status, "coverage_issue": issue})
 
 
 def confirm_value(claim: Claim) -> Claim:
     """The declarant confirmed the value that leaves the loss uncovered: the claim closes."""
     if claim.status.is_final or claim.coverage_issue is None:
         raise InvalidTransitionError("there is no value waiting for confirmation")
-    _, status = COVERAGE_ISSUES[claim.coverage_issue]
-    return close(claim, status, claim.coverage_issue)
+    outcome = COVERAGE_ISSUES[claim.coverage_issue]
+    return close(claim, outcome.status, outcome.reason)
 
 
 def close(claim: Claim, status: ClaimStatus, reason: ClosureReason) -> Claim:
@@ -241,8 +242,8 @@ def close(claim: Claim, status: ClaimStatus, reason: ClosureReason) -> Claim:
         PendingField(field=name, last_error=claim.field_errors.get(name))
         for name in claim.missing_fields
     )
-    return claim.model_copy(
-        update={"status": status, "closure_reason": reason, "pending_fields": pending}
+    return _transitioned(
+        claim, {"status": status, "closure_reason": reason, "pending_fields": pending}
     )
 
 
@@ -250,4 +251,10 @@ def confirm(claim: Claim, reference: str) -> Claim:
     """The declarant approved the read-back of the complete claim."""
     if claim.status is not ClaimStatus.PENDING_CONFIRMATION:
         raise InvalidTransitionError(f"cannot confirm a claim that is {claim.status}")
-    return claim.model_copy(update={"status": ClaimStatus.CONFIRMED, "reference": reference})
+    return _transitioned(claim, {"status": ClaimStatus.CONFIRMED, "reference": reference})
+
+
+def _transitioned(claim: Claim, changes: Mapping[str, object]) -> Claim:
+    """`claim` with `changes`, validated: unlike `model_copy`, this runs the claim's checks
+    that its status matches its data, so a transition cannot produce a state they forbid."""
+    return Claim.model_validate(dict(claim) | dict(changes))

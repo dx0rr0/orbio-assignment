@@ -179,7 +179,7 @@ All three go through OpenRouter, each behind a port:
 - Alerts on system failures, escalations and hallucination flags (a periodic task over recent conversations, with thresholds and a webhook).
 - Real identity verification and authentication (staff access to the conversation list, declarants resuming from another device); resuming a conversation after it closes; geocoding the loss location.
 - An offline hallucination judge over Langfuse traces.
-- The rules for conditional fields live in one declarative table: today when a field is required (`Claim.required_fields`) and when it doesn't apply (`_inapplicable_fields`) are written separately. The refusal and escalation thresholds move from the turn loop into the domain.
+- The rules for conditional fields live in one declarative table: today when a field is required (`Claim.required_fields`) and when it doesn't apply (`_inapplicable_fields`) are written separately.
 - Multi-tenancy.
 
 ## Known limitations

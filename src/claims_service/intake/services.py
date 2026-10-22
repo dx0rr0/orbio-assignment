@@ -18,7 +18,7 @@ from claims_agent.adapters.openrouter import (
     OpenRouterSpeechToText,
     OpenRouterTextToSpeech,
 )
-from claims_agent.engine import ConversationEngine, Voice
+from claims_agent.engine import ConversationEngine, RetryingChatModel, Voice
 from claims_agent.ports import (
     ChatModel,
     ConversationRepository,
@@ -28,7 +28,11 @@ from claims_agent.ports import (
     Telemetry,
 )
 from claims_service.intake import access, tasks
-from claims_service.intake.repository import DjangoConversationRepository
+from claims_service.intake.repository import (
+    DjangoConversationRepository,
+    DjangoPolicyCatalog,
+    PostgresReferenceSequence,
+)
 from claims_service.intake.tasks import TaskServices
 
 # Give up queueing the summary after about a second instead of kombu's default retries.
@@ -159,7 +163,13 @@ def for_consumer() -> ConsumerServices:
     resources.push_async_callback(llm.aclose)
     stt, tts = speech_from_settings(resources)
     return ConsumerServices(
-        engine=ConversationEngine(llm=llm, repository=repository, telemetry=telemetry),
+        engine=ConversationEngine(
+            llm=RetryingChatModel(llm),
+            conversations=repository,
+            policies=DjangoPolicyCatalog(),
+            references=PostgresReferenceSequence(),
+            telemetry=telemetry,
+        ),
         voice=Voice(stt, tts, telemetry),
         repository=repository,
         telemetry=telemetry,

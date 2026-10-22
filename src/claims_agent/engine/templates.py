@@ -13,6 +13,7 @@ from claims_agent.domain import (
     ClaimStatus,
     ClosureReason,
     CompleteClaim,
+    CoverageIssue,
     LossLocation,
     LossType,
     LossWindow,
@@ -262,7 +263,7 @@ def confirm_coverage_value(claim: Claim, policy: Policy | None) -> BotMessage:
     claim closes over it. `policy` is the claim's identified policy. Raises `ValueError` if
     there is no such value, or the value or policy it comes from is missing."""
     match claim.coverage_issue, claim.loss_location, claim.loss_window, policy:
-        case ClosureReason.OUTSIDE_SPAIN, LossLocation() as location, _, _:
+        case CoverageIssue.OUTSIDE_SPAIN, LossLocation() as location, _, _:
             place = f"{location.municipality} ({location.country})"
             return BotMessage(
                 f"Me ha indicado que el siniestro ocurrió en {place}. Por esta vía solo podemos "
@@ -270,13 +271,13 @@ def confirm_coverage_value(claim: Claim, policy: Policy | None) -> BotMessage:
                 "dígame dónde ocurrió."
             )
         case (
-            (ClosureReason.OUTSIDE_COVERAGE_PERIOD | ClosureReason.PARTIAL_COVERAGE) as issue,
+            (CoverageIssue.OUTSIDE_COVERAGE_PERIOD | CoverageIssue.PARTIAL_COVERAGE) as issue,
             _,
             LossWindow() as window,
             Policy() as policy,
         ):
             outside = (
-                "queda en parte fuera" if issue is ClosureReason.PARTIAL_COVERAGE else "queda fuera"
+                "queda en parte fuera" if issue is CoverageIssue.PARTIAL_COVERAGE else "queda fuera"
             )
             return BotMessage(
                 f"Me ha indicado que el siniestro ocurrió {format_loss_window(window)}. "

@@ -5,6 +5,8 @@ from claims_agent.ports.repository import (
     ConcurrentUpdateError,
     ConversationNotFoundError,
     ConversationRepository,
+    PolicyCatalog,
+    ReferenceSequence,
 )
 from claims_agent.ports.speech import SpeechError, SpeechToText, TextToSpeech
 from claims_agent.ports.telemetry import NullTelemetry, Span, Telemetry
@@ -18,6 +20,8 @@ __all__ = [
     "FunctionSpec",
     "LLMError",
     "NullTelemetry",
+    "PolicyCatalog",
+    "ReferenceSequence",
     "Span",
     "SpeechError",
     "SpeechToText",

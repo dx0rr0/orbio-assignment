@@ -6,6 +6,7 @@ from claims_agent.domain.claim import (
     ClaimStatus,
     ClosureReason,
     CompleteClaim,
+    CoverageIssue,
     LossType,
     PendingField,
     Urgency,
@@ -28,6 +29,16 @@ from claims_agent.domain.lifecycle import (
     identified_policy,
     policy_number_to_look_up,
 )
+from claims_agent.domain.limits import (
+    MAX_LLM_FAILURES,
+    MAX_REFUSALS,
+    MAX_REPEAT_REQUESTS,
+    record_llm_failure,
+    record_llm_reply,
+    record_refusal,
+    record_understood,
+    record_unintelligible,
+)
 from claims_agent.domain.location import LossLocation
 from claims_agent.domain.loss_window import MADRID, Coverage, LossWindow, coverage
 from claims_agent.domain.policy import Policy
@@ -36,6 +47,9 @@ __all__ = [
     "CLAIM_FIELDS",
     "MADRID",
     "MAX_FAILED_ATTEMPTS",
+    "MAX_LLM_FAILURES",
+    "MAX_REFUSALS",
+    "MAX_REPEAT_REQUESTS",
     "Claim",
     "ClaimClosedError",
     "ClaimStatus",
@@ -44,6 +58,7 @@ __all__ = [
     "CompleteClaim",
     "Conversation",
     "Coverage",
+    "CoverageIssue",
     "FieldError",
     "IncompleteClaimError",
     "InvalidTransitionError",
@@ -65,4 +80,9 @@ __all__ = [
     "format_reference",
     "identified_policy",
     "policy_number_to_look_up",
+    "record_llm_failure",
+    "record_llm_reply",
+    "record_refusal",
+    "record_understood",
+    "record_unintelligible",
 ]

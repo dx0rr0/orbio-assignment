@@ -391,7 +391,7 @@ def percentile(values: list[float], q: float) -> float:
 def build_harness() -> Harness:
     """The consumer with the production services but for the repository and the access
     tokens, which live in memory with the conversations, and the meters around them."""
-    from claims_agent.engine import ConversationEngine
+    from claims_agent.engine import ConversationEngine, RetryingChatModel
     from claims_service.intake import services
     from claims_service.intake.routing import websocket_application
 
@@ -405,7 +405,13 @@ def build_harness() -> Harness:
     resources.push_async_callback(chat_model.aclose)
     llm = MeteredChatModel(chat_model, meter)
     consumer_services = services.ConsumerServices(
-        engine=ConversationEngine(llm=llm, repository=repository, telemetry=telemetry),
+        engine=ConversationEngine(
+            llm=RetryingChatModel(llm),
+            conversations=repository,
+            policies=repository,
+            references=repository,
+            telemetry=telemetry,
+        ),
         voice=Voice(*services.speech_from_settings(resources), telemetry),
         repository=repository,
         telemetry=telemetry,

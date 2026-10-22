@@ -1,4 +1,4 @@
-"""In-process repository, for tests and for running the engine without a database (evals)."""
+"""In-process storage, for tests and for running the engine without a database (evals)."""
 
 from collections import defaultdict
 from collections.abc import Iterable
@@ -9,6 +9,9 @@ from claims_agent.ports import ConcurrentUpdateError, ConversationNotFoundError
 
 
 class InMemoryConversationRepository:
+    """All three storage ports at once (conversations, policies, the reference sequence): a
+    test or an eval hands the same object in for each."""
+
     def __init__(self, policies: Iterable[Policy] = ()) -> None:
         self._conversations: dict[UUID, Conversation] = {}
         self._policies = {policy.number: policy for policy in policies}

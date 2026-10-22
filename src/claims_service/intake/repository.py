@@ -1,4 +1,5 @@
-"""The conversation repository port, on the Django ORM and Postgres."""
+"""The storage ports (conversations, policies, the reference sequence) on the Django ORM and
+Postgres."""
 
 from datetime import datetime
 from uuid import UUID
@@ -53,21 +54,6 @@ class DjangoConversationRepository:
             raise ConcurrentUpdateError(conversation.id)
         return conversation.model_copy(update={"version": conversation.version + 1})
 
-    async def get_policy(self, number: str) -> Policy | None:
-        record = await PolicyRecord.objects.filter(number=number).afirst()
-        if record is None:
-            return None
-        return Policy(
-            number=record.number,
-            holder_name=record.holder_name,
-            plate=record.plate,
-            start_date=record.start_date,
-            end_date=record.end_date,
-        )
-
-    async def next_reference_sequence(self, year: int) -> int:
-        return await sync_to_async(_next_sequence)(year)
-
     async def list_recent(self, *, status: ClaimStatus | None, limit: int) -> list[Conversation]:
         """The last `limit` saved, most recent first, optionally only those in `status`."""
         records = ConversationRecord.objects.order_by("-updated_at")
@@ -94,6 +80,25 @@ class DjangoConversationRepository:
             updated_at__lt=confirmed_before,
         ).values_list("id", flat=True)
         return [conversation_id async for conversation_id in ids]
+
+
+class DjangoPolicyCatalog:
+    async def get_policy(self, number: str) -> Policy | None:
+        record = await PolicyRecord.objects.filter(number=number).afirst()
+        if record is None:
+            return None
+        return Policy(
+            number=record.number,
+            holder_name=record.holder_name,
+            plate=record.plate,
+            start_date=record.start_date,
+            end_date=record.end_date,
+        )
+
+
+class PostgresReferenceSequence:
+    async def next_reference_sequence(self, year: int) -> int:
+        return await sync_to_async(_next_sequence)(year)
 
 
 def _next_sequence(year: int) -> int:

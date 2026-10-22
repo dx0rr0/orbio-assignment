@@ -5,10 +5,20 @@ from datetime import timedelta
 import pytest
 
 from claims_agent.adapters.memory import InMemoryConversationRepository
-from claims_agent.domain import CLAIM_FIELDS, ClaimStatus, ClosureReason, LossType, Role, close
-from claims_agent.engine import ConversationEngine, templates, tools
+from claims_agent.domain import (
+    CLAIM_FIELDS,
+    MAX_LLM_FAILURES,
+    MAX_REPEAT_REQUESTS,
+    ClaimStatus,
+    ClosureReason,
+    CoverageIssue,
+    LossType,
+    Role,
+    close,
+)
+from claims_agent.engine import ConversationEngine, RetryingChatModel, templates, tools
+from claims_agent.engine.retrying import LLM_RETRY_DELAYS
 from claims_agent.engine.tools import CONFIRM_CLAIM, CONFIRM_VALUE, DECLARANT_REFUSES, UPDATE_CLAIM
-from claims_agent.engine.turns import LLM_RETRY_DELAYS, MAX_LLM_FAILURES, MAX_REPEAT_REQUESTS
 from claims_agent.seed import seed_policies
 from tests.engine.fakes import LLM_DOWN, ScriptedLLM, call, calls, no_sleep, say
 from tests.support import COMPLETE, IDENTIFICATION, NEW_POLICY, NOW
@@ -88,7 +98,13 @@ class LookupRecorder(InMemoryConversationRepository):
 
 async def test_the_policy_is_looked_up_only_for_a_number_and_not_used_before_the_plate(llm):
     repository = LookupRecorder()
-    engine = ConversationEngine(llm=llm, repository=repository, clock=lambda: NOW, sleep=no_sleep)
+    engine = ConversationEngine(
+        llm=RetryingChatModel(llm, sleep=no_sleep),
+        conversations=repository,
+        policies=repository,
+        references=repository,
+        clock=lambda: NOW,
+    )
     conversation_id = (await engine.start()).conversation.id
     llm.then(call(UPDATE_CLAIM, {"declarant_name": "María López"}), say("¿Su póliza?"))
     llm.then(call(UPDATE_CLAIM, {"policy_number": "AUT-48213907"}), say("¿Y la matrícula?"))
@@ -384,7 +400,7 @@ async def test_a_value_outside_the_coverage_period_is_stated_back_for_confirmati
 
     claim = result.conversation.claim
     assert claim.status is ClaimStatus.IN_PROGRESS
-    assert claim.coverage_issue is ClosureReason.OUTSIDE_COVERAGE_PERIOD
+    assert claim.coverage_issue is CoverageIssue.OUTSIDE_COVERAGE_PERIOD
     assert len(llm.requests) == 1  # the question is a template
     assert texts(result) == [templates.confirm_coverage_value(claim, NEW_POLICY).text]
     assert "13 de octubre de 2026" in result.replies[0].text
@@ -476,7 +492,13 @@ class Clock:
 
 async def test_closed_conversation_does_not_call_the_llm(llm, repository):
     clock = Clock()
-    engine = ConversationEngine(llm=llm, repository=repository, clock=clock, sleep=no_sleep)
+    engine = ConversationEngine(
+        llm=RetryingChatModel(llm, sleep=no_sleep),
+        conversations=repository,
+        policies=repository,
+        references=repository,
+        clock=clock,
+    )
     conversation_id = (await engine.start()).conversation.id
     llm.then(call(UPDATE_CLAIM, COMPLETE), call(CONFIRM_CLAIM))
     await engine.handle_text(conversation_id, "Todos los datos")
@@ -504,7 +526,13 @@ async def test_a_turn_marks_the_conversation_active_before_the_llm_replies(repos
             return await super().complete(**request)
 
     llm = Observing().then(say("¿Me indica su póliza?"))
-    engine = ConversationEngine(llm=llm, repository=repository, clock=clock, sleep=no_sleep)
+    engine = ConversationEngine(
+        llm=RetryingChatModel(llm, sleep=no_sleep),
+        conversations=repository,
+        policies=repository,
+        references=repository,
+        clock=clock,
+    )
     conversation_id = (await engine.start()).conversation.id
     clock.now += timedelta(minutes=5)
 
@@ -809,7 +837,13 @@ async def test_a_turn_that_takes_too_long_apologises(llm, repository, conversati
         async def complete(self, **request):
             await asyncio.Event().wait()  # never answers
 
-    engine = ConversationEngine(llm=HangingLLM(), repository=repository, turn_deadline=0.05)
+    engine = ConversationEngine(
+        llm=RetryingChatModel(HangingLLM()),
+        conversations=repository,
+        policies=repository,
+        references=repository,
+        turn_deadline=0.05,
+    )
 
     result = await engine.handle_text(conversation_id, "Hola, quiero dar un parte")
 
@@ -829,7 +863,13 @@ async def test_tool_results_survive_the_turn_deadline(llm, repository, conversat
                 await asyncio.Event().wait()  # never answers again
             return call(UPDATE_CLAIM, IDENTIFICATION)
 
-    engine = ConversationEngine(llm=SlowAfterTools(), repository=repository, turn_deadline=0.05)
+    engine = ConversationEngine(
+        llm=RetryingChatModel(SlowAfterTools()),
+        conversations=repository,
+        policies=repository,
+        references=repository,
+        turn_deadline=0.05,
+    )
 
     result = await engine.handle_text(conversation_id, "AUT 48213907, 4721 KLM")
 

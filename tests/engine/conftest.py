@@ -1,7 +1,7 @@
 import pytest
 
 from claims_agent.adapters.memory import InMemoryConversationRepository
-from claims_agent.engine import ConversationEngine
+from claims_agent.engine import ConversationEngine, RetryingChatModel
 from claims_agent.seed import seed_policies
 from tests.engine.fakes import RecordingTelemetry, ScriptedLLM, no_sleep
 from tests.support import NOW
@@ -25,7 +25,12 @@ def repository() -> InMemoryConversationRepository:
 @pytest.fixture
 def engine(llm, repository, telemetry) -> ConversationEngine:
     return ConversationEngine(
-        llm=llm, repository=repository, telemetry=telemetry, clock=lambda: NOW, sleep=no_sleep
+        llm=RetryingChatModel(llm, sleep=no_sleep),
+        conversations=repository,
+        policies=repository,
+        references=repository,
+        telemetry=telemetry,
+        clock=lambda: NOW,
     )
 
 

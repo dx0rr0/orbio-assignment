@@ -2,9 +2,9 @@
 
 import hashlib
 from enum import StrEnum
-from typing import overload
+from typing import NamedTuple, Self, overload
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from claims_agent.domain.errors import IncompleteClaimError
 from claims_agent.domain.location import LossLocation
@@ -42,12 +42,33 @@ class ClosureReason(StrEnum):
     OUTSIDE_SPAIN = "outside_spain"
 
 
-# The field whose value raises each coverage issue, and the status the claim closes in once the
-# declarant confirms that value.
-COVERAGE_ISSUES: dict[ClosureReason, tuple[str, ClaimStatus]] = {
-    ClosureReason.OUTSIDE_SPAIN: ("loss_location", ClaimStatus.NOT_COVERED),
-    ClosureReason.OUTSIDE_COVERAGE_PERIOD: ("loss_window", ClaimStatus.NOT_COVERED),
-    ClosureReason.PARTIAL_COVERAGE: ("loss_window", ClaimStatus.ESCALATED),
+class CoverageIssue(StrEnum):
+    """A value that would leave the loss uncovered, waiting for the declarant to confirm it.
+    Each is spelled like the closure reason it becomes, so stored claims read the same."""
+
+    OUTSIDE_SPAIN = "outside_spain"
+    OUTSIDE_COVERAGE_PERIOD = "outside_coverage_period"
+    PARTIAL_COVERAGE = "partial_coverage"
+
+
+class CoverageOutcome(NamedTuple):
+    # The field whose value raises the issue.
+    field: str
+    # How the claim closes once the declarant confirms that value.
+    status: ClaimStatus
+    reason: ClosureReason
+
+
+COVERAGE_ISSUES: dict[CoverageIssue, CoverageOutcome] = {
+    CoverageIssue.OUTSIDE_SPAIN: CoverageOutcome(
+        "loss_location", ClaimStatus.NOT_COVERED, ClosureReason.OUTSIDE_SPAIN
+    ),
+    CoverageIssue.OUTSIDE_COVERAGE_PERIOD: CoverageOutcome(
+        "loss_window", ClaimStatus.NOT_COVERED, ClosureReason.OUTSIDE_COVERAGE_PERIOD
+    ),
+    CoverageIssue.PARTIAL_COVERAGE: CoverageOutcome(
+        "loss_window", ClaimStatus.ESCALATED, ClosureReason.PARTIAL_COVERAGE
+    ),
 }
 
 
@@ -156,9 +177,29 @@ class Claim(BaseModel):
     failed_attempts: dict[str, int] = {}
     closure_reason: ClosureReason | None = None
     # A value that would leave the loss uncovered, waiting for the declarant to confirm it.
-    coverage_issue: ClosureReason | None = None
+    coverage_issue: CoverageIssue | None = None
     pending_fields: tuple[PendingField, ...] = ()
     reference: str | None = None
+
+    @model_validator(mode="after")
+    def _status_matches_its_data(self) -> Self:
+        """States the lifecycle never produces, rejected wherever a claim is built: in the
+        lifecycle's transitions and when a stored document is loaded. Only checks that hold
+        for every claim ever stored; completeness is not one (the required fields changed)."""
+        confirmed = self.status is ClaimStatus.CONFIRMED
+        closed_unconfirmed = self.status.is_final and not confirmed
+        if confirmed != (self.reference is not None):
+            raise ValueError("a claim has a reference exactly when it is confirmed")
+        if closed_unconfirmed != (self.closure_reason is not None):
+            raise ValueError("a claim has a closure reason exactly when it closed unconfirmed")
+        if self.pending_fields and not closed_unconfirmed:
+            raise ValueError("only a claim that closed unconfirmed has pending fields")
+        if self.coverage_issue is not None and self.status in (
+            ClaimStatus.PENDING_CONFIRMATION,
+            ClaimStatus.CONFIRMED,
+        ):
+            raise ValueError(f"a {self.status} claim cannot have a coverage issue")
+        return self
 
     @property
     def required_fields(self) -> tuple[str, ...]:
@@ -192,7 +233,7 @@ class Claim(BaseModel):
     @property
     def value_to_confirm(self) -> str | None:
         """The field the declarant must confirm before the claim closes over its coverage."""
-        return COVERAGE_ISSUES[self.coverage_issue][0] if self.coverage_issue else None
+        return COVERAGE_ISSUES[self.coverage_issue].field if self.coverage_issue else None
 
     @property
     def fingerprint_to_confirm(self) -> str:

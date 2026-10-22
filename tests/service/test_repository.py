@@ -8,7 +8,11 @@ from django.utils import timezone
 from claims_agent.domain import Claim, Conversation
 from claims_agent.ports import ConcurrentUpdateError, ConversationNotFoundError
 from claims_service.intake.models import ConversationRecord
-from claims_service.intake.repository import _next_sequence
+from claims_service.intake.repository import (
+    DjangoPolicyCatalog,
+    PostgresReferenceSequence,
+    _next_sequence,
+)
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -75,18 +79,20 @@ async def test_the_most_recently_saved_are_listed_first(repository):
     assert [conversation.id for conversation in recent] == [newest.id, newer.id]
 
 
-async def test_policy_lookup(repository, policies):
-    policy = await repository.get_policy("AUT-48213907")
+async def test_policy_lookup(policies):
+    catalog = DjangoPolicyCatalog()
+    policy = await catalog.get_policy("AUT-48213907")
 
     assert policy is not None
     assert (policy.holder_name, policy.plate) == ("María López Fernández", "4721KLM")
     assert isinstance(policy.start_date, date)
-    assert await repository.get_policy("AUT-00000000") is None
+    assert await catalog.get_policy("AUT-00000000") is None
 
 
-async def test_reference_sequence_counts_per_year(repository):
-    assert [await repository.next_reference_sequence(2026) for _ in range(3)] == [1, 2, 3]
-    assert await repository.next_reference_sequence(2027) == 1
+async def test_reference_sequence_counts_per_year():
+    sequence = PostgresReferenceSequence()
+    assert [await sequence.next_reference_sequence(2026) for _ in range(3)] == [1, 2, 3]
+    assert await sequence.next_reference_sequence(2027) == 1
 
 
 def test_reference_sequence_is_unique_across_concurrent_connections():

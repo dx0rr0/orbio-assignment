@@ -60,7 +60,8 @@ class Conversation(BaseModel):
     messages: tuple[Message, ...] = ()
     # Consecutive turns that could not be understood, or in which the LLM was unavailable.
     unintelligible_streak: int = 0
-    # The last of those whose speech could not be transcribed at all (an STT outage).
+    # Of the unintelligible ones, the last in a row whose speech could not be transcribed at
+    # all (an STT outage).
     transcription_failure_streak: int = 0
     llm_failure_streak: int = 0
     # How many times the declarant refused to give each field.
