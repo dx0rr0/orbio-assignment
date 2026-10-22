@@ -33,6 +33,12 @@ class Speech:
         self.fail = fail
         self.texts: list[str] = []
         self.pieces: dict[str, list[bytes]] = {}
+        self.warm_ups = 0
+
+    async def warm_up(self) -> None:
+        self.warm_ups += 1
+        if self.fail:
+            raise SpeechError("down")
 
     async def transcribe(self, wav: bytes) -> str:
         if self.fail:
@@ -57,6 +63,22 @@ async def test_transcription_is_stripped():
 
 async def test_failed_transcription_becomes_an_empty_utterance():
     assert await Voice(Speech(fail=True), Speech()).transcribe(b"x") == ""
+
+
+async def test_getting_ready_to_listen_warms_up_the_transcription():
+    stt = Speech()
+
+    await Voice(stt, Speech()).get_ready_to_listen()
+
+    assert stt.warm_ups == 1
+
+
+async def test_a_failed_warm_up_is_left_to_the_first_transcription():
+    stt = Speech(fail=True)
+
+    await Voice(stt, Speech()).get_ready_to_listen()  # no error
+
+    assert stt.warm_ups == 1
 
 
 async def test_all_replies_of_a_turn_are_spoken_at_once_using_their_speech_text():

@@ -78,6 +78,14 @@ class Voice:
             span.update(output=text)
             return text
 
+    async def get_ready_to_listen(self) -> None:
+        """Warms up the transcription when a call starts, so the first utterance is not slower
+        than the rest. A failure is logged and left for the first transcription."""
+        try:
+            await self._stt.warm_up()
+        except SpeechError:
+            logger.warning("Could not warm up the transcription", exc_info=True)
+
     async def warm_up(self) -> None:
         """Synthesizes the greeting before the first conversation, so it is instant from the
         start. A failure is logged and left for the first conversation to retry."""

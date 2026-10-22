@@ -11,6 +11,11 @@ class SpeechToText(Protocol):
         """Transcribe Spanish speech from a WAV or Ogg Opus file. Raises `SpeechError`."""
         ...
 
+    async def warm_up(self) -> None:
+        """Gets ready for the first transcription (e.g. opens the connection to the provider)
+        without paying for one. Raises `SpeechError`."""
+        ...
+
 
 class TextToSpeech(Protocol):
     # Of the audio `stream` yields: raw PCM, 16-bit little-endian mono at this rate.

@@ -34,9 +34,8 @@ TIMEOUT_SECONDS = 30.0
 CHAT_TIMEOUT_SECONDS = 10.0
 # Idle connections stay open between turns: the declarant usually talks for longer than
 # httpx's default 5 s, and a new connection to openrouter.ai costs ~50 ms more (TCP and TLS),
-# sometimes 0.5 s. OpenRouter kept idle connections for 80 s and more; closing them sooner on
-# this side avoids sending a request on one it is closing.
-KEEPALIVE_SECONDS = 60.0
+# sometimes 0.5 s. Five minutes covers a declarant who takes their time to answer.
+KEEPALIVE_SECONDS = 300.0
 
 
 def _to_openai(message: Message) -> ChatCompletionMessageParam:
@@ -196,6 +195,12 @@ def _speech_errors(path: str) -> Iterator[None]:
 
 
 class OpenRouterSpeechToText(_OpenRouterAudio):
+    async def warm_up(self) -> None:
+        # The key's own details: free, and it opens the connection the transcriptions reuse.
+        with _speech_errors("/key"):
+            response = await self._client.get("/key", headers=self._headers)
+            response.raise_for_status()
+
     async def transcribe(self, audio: bytes) -> str:
         # MAI Transcribe takes Ogg Opus as well as WAV (not WebM nor MP4); the browser sends
         # Ogg where it can encode it, ~12 times smaller.

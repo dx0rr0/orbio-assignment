@@ -76,3 +76,14 @@ async def test_connections_stay_open_between_turns(server):
 
     # One connection per client, reused by the second turn.
     assert counting.connections == 2
+
+
+async def test_warming_up_opens_the_connection_the_first_transcription_uses(server):
+    counting, base_url = server
+
+    async with OpenRouterSpeechToText("key", base_url=base_url) as stt:
+        await stt.warm_up()
+        assert counting.connections == 1
+        await stt.transcribe(b"RIFF")
+
+    assert counting.connections == 1

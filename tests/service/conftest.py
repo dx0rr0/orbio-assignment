@@ -22,6 +22,10 @@ from tests.engine.fakes import RecordingTelemetry, ScriptedLLM, no_sleep
 class FakeSpeechToText:
     def __init__(self) -> None:
         self.transcripts: list[str | Exception] = []
+        self.warm_ups = 0
+
+    async def warm_up(self) -> None:
+        self.warm_ups += 1
 
     async def transcribe(self, wav: bytes) -> str:
         step = self.transcripts.pop(0)

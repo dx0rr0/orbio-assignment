@@ -113,3 +113,11 @@ async def test_a_connection_lost_mid_speech_raises_after_what_arrived():
     assert await anext(speech) == b"\x01\x00"
     with pytest.raises(SpeechError, match="connection reset"):
         await anext(speech)
+
+
+async def test_warming_up_is_a_free_request_not_a_transcription():
+    requests: list[httpx.Request] = []
+
+    await transcriber(requests).warm_up()
+
+    assert [(r.method, r.url.path) for r in requests] == [("GET", "/api/v1/key")]
