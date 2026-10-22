@@ -1,8 +1,9 @@
 """When a turn must stop the LLM and speak a template instead, and which template it speaks
 (ADR-0005): the read-back, the reference, a value that leaves the loss uncovered, a closing."""
 
-from claims_agent.domain import Claim, ClaimStatus, Policy, identified_policy
+from claims_agent.domain import Claim, ClaimStatus
 from claims_agent.engine import templates
+from claims_agent.engine.identification import policy_of
 from claims_agent.engine.templates import BotMessage
 from claims_agent.ports import PolicyCatalog
 
@@ -32,11 +33,3 @@ async def script(claim: Claim, *, heard: Claim | None, policies: PolicyCatalog) 
     if not claim.status.is_final:
         return templates.confirm_coverage_value(claim, await policy_of(claim, policies))
     return templates.closed(claim, await policy_of(claim, policies))
-
-
-async def policy_of(claim: Claim, policies: PolicyCatalog) -> Policy | None:
-    """The claim's policy, once the declarant is identified by its number and plate: only
-    then may the templates and the LLM's prompt use what it says."""
-    if claim.policy_number is None or claim.plate is None:
-        return None
-    return identified_policy(claim, await policies.get_policy(claim.policy_number))

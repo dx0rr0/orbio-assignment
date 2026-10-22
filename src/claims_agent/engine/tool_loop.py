@@ -6,11 +6,13 @@ import json
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 
 from claims_agent.domain import Conversation, Message, Role, ToolCall
 from claims_agent.engine import tools
+from claims_agent.engine.identification import policy_of
 from claims_agent.engine.prompts import system_prompt
-from claims_agent.engine.scripted import needs_script, policy_of
+from claims_agent.engine.scripted import needs_script
 from claims_agent.engine.tool_handlers import ToolHandlers, Turn
 from claims_agent.engine.tools import ToolResult
 from claims_agent.ports import ChatModel, Completion, LLMError, PolicyCatalog
@@ -67,11 +69,14 @@ class ToolLoop:
         self._policies = policies
         self._deadline = deadline
 
-    async def run(self, conversation: Conversation, turn: Turn) -> tuple[Conversation, str | None]:
+    async def run(
+        self, conversation: Conversation, now: datetime
+    ) -> tuple[Conversation, str | None]:
         """Let the LLM call tools until it replies in text, or until the claim changes in a way
         a template must announce (then the reply is None). The reply is returned, not added to
         the history. Raises `LLMUnavailableError` without a usable reply within `deadline`
         seconds, retries included; tool results are kept even then."""
+        turn = Turn(now)
         progress = _Progress(conversation)
         try:
             async with asyncio.timeout(self._deadline):

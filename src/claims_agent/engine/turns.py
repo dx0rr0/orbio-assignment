@@ -29,7 +29,7 @@ from claims_agent.engine import templates
 from claims_agent.engine.hallucinations import report_reply
 from claims_agent.engine.scripted import needs_script, script
 from claims_agent.engine.templates import BotMessage
-from claims_agent.engine.tool_handlers import ToolHandlers, Turn
+from claims_agent.engine.tool_handlers import ToolHandlers
 from claims_agent.engine.tool_loop import LLMUnavailableError, ToolLoop
 from claims_agent.ports import (
     ChatModel,
@@ -123,7 +123,7 @@ class ConversationEngine:
         else:
             conversation = conversation.add(Message(role=Role.USER, content=utterance.strip()))
             conversation = record_understood(conversation)
-            conversation, replies = await self._converse(conversation, Turn(now))
+            conversation, replies = await self._converse(conversation, now)
 
         conversation = conversation.model_copy(update={"updated_at": now})
         try:
@@ -148,11 +148,11 @@ class ConversationEngine:
         return _say(conversation, templates.closed(conversation.claim, policy=None))
 
     async def _converse(
-        self, conversation: Conversation, turn: Turn
+        self, conversation: Conversation, now: datetime
     ) -> tuple[Conversation, tuple[BotMessage, ...]]:
         before = conversation.claim
         try:
-            conversation, llm_reply = await self._tool_loop.run(conversation, turn)
+            conversation, llm_reply = await self._tool_loop.run(conversation, now)
         except LLMUnavailableError as error:
             conversation, llm_reply = record_llm_failure(error.conversation), None
         else:
@@ -162,6 +162,8 @@ class ConversationEngine:
         replies: list[BotMessage] = []
         if after.injuries and not before.injuries:
             replies.append(templates.emergency_advice())
+        # Asked again, not taken from the loop: a failed loop or the limit on LLM failures may
+        # also have changed the claim in a way only a template may announce.
         if needs_script(before, after):
             heard = conversation.read_back_claim
             replies.append(await script(after, heard=heard, policies=self._policies))
