@@ -2,8 +2,10 @@
 worker process (`for_tasks`) build their dependencies here once and hand them in; tests and the
 evals build their own, with fakes."""
 
+import asyncio
 import importlib
-from collections.abc import AsyncIterator, Callable
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -17,13 +19,22 @@ from claims_agent.adapters.openrouter import (
     OpenRouterTextToSpeech,
 )
 from claims_agent.engine import ConversationEngine, Voice
-from claims_agent.ports import ChatModel, ConversationRepository, NullTelemetry, Telemetry
+from claims_agent.ports import (
+    ChatModel,
+    ConversationRepository,
+    LLMError,
+    NullTelemetry,
+    SpeechError,
+    Telemetry,
+)
 from claims_service.intake import access, tasks
 from claims_service.intake.repository import DjangoConversationRepository
 from claims_service.intake.tasks import TaskServices
 
 # Give up queueing the summary after about a second instead of kombu's default retries.
 SUMMARY_RETRY_POLICY = {"max_retries": 2, "interval_start": 0, "interval_step": 0.5}
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationAccess(Protocol):
@@ -32,6 +43,16 @@ class ConversationAccess(Protocol):
     async def issue_token(self, conversation_id: UUID) -> str: ...
 
     async def is_authorized(self, conversation_id: UUID, token: str | None) -> bool: ...
+
+
+class ProviderClient(Protocol):
+    async def warm_up(self) -> None:
+        """Opens (or keeps open) its connection to the provider, for free."""
+        ...
+
+
+async def _no_connections() -> None:
+    pass
 
 
 @dataclass(frozen=True)
@@ -45,6 +66,8 @@ class ConsumerServices:
     access: ConversationAccess
     # Queues the summary of a confirmed claim. It publishes to the broker, so it blocks.
     request_summary: Callable[[str], None]
+    # Opens (or keeps open) the connections to the providers, so that no turn waits for one.
+    warm_up_connections: Callable[[], Awaitable[None]] = _no_connections
     # What the adapters hold open (the speech clients), closed by `aclose`.
     resources: AsyncExitStack = field(default_factory=AsyncExitStack)
 
@@ -84,13 +107,36 @@ async def open_chat_model() -> AsyncIterator[ChatModel]:
         await llm.aclose()
 
 
-def voice_from_settings(telemetry: Telemetry, resources: AsyncExitStack) -> Voice:
+def speech_from_settings(
+    resources: AsyncExitStack,
+) -> tuple[OpenRouterSpeechToText, OpenRouterTextToSpeech]:
     """One pooled client per adapter for the whole process, closed with `resources`."""
     stt = OpenRouterSpeechToText(settings.OPENROUTER_API_KEY)
     resources.push_async_callback(stt.aclose)
     tts = OpenRouterTextToSpeech(settings.OPENROUTER_API_KEY)
     resources.push_async_callback(tts.aclose)
-    return Voice(stt, tts, telemetry)
+    return stt, tts
+
+
+def voice_from_settings(telemetry: Telemetry, resources: AsyncExitStack) -> Voice:
+    return Voice(*speech_from_settings(resources), telemetry)
+
+
+def connections_warm_up(*clients: ProviderClient) -> Callable[[], Awaitable[None]]:
+    """Warms up all `clients` at once. A failure is logged and left to the client's next real
+    request."""
+
+    async def warm_up() -> None:
+        results = await asyncio.gather(
+            *(client.warm_up() for client in clients), return_exceptions=True
+        )
+        for result in results:
+            if isinstance(result, SpeechError | LLMError):
+                logger.warning("Could not warm up a provider connection: %s", result)
+            elif isinstance(result, BaseException):
+                raise result
+
+    return warm_up
 
 
 def request_summary(conversation_id: str) -> None:
@@ -105,13 +151,15 @@ def for_consumer() -> ConsumerServices:
     resources = AsyncExitStack()
     llm = chat_model_from_settings()
     resources.push_async_callback(llm.aclose)
+    stt, tts = speech_from_settings(resources)
     return ConsumerServices(
         engine=ConversationEngine(llm=llm, repository=repository, telemetry=telemetry),
-        voice=voice_from_settings(telemetry, resources),
+        voice=Voice(stt, tts, telemetry),
         repository=repository,
         telemetry=telemetry,
         access=access,
         request_summary=request_summary,
+        warm_up_connections=connections_warm_up(llm, stt, tts),
         resources=resources,
     )
 

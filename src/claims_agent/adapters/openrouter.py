@@ -138,6 +138,14 @@ class OpenRouterChatModel:
             content=message.content, tool_calls=tool_calls, usage=_usage(response.usage)
         )
 
+    async def warm_up(self) -> None:
+        """Opens (or keeps open) the connection the completions use, with a free request: the
+        key's own details. Raises `LLMError`."""
+        try:
+            await self._client.get("/key", cast_to=object)
+        except openai.OpenAIError as error:
+            raise LLMError(str(error)) from error
+
     async def aclose(self) -> None:
         await self._client.close()
 
@@ -167,6 +175,13 @@ class _OpenRouterAudio:
         )
         self._headers = {"Authorization": f"Bearer {api_key}"}
 
+    async def warm_up(self) -> None:
+        """Opens (or keeps open) this client's connection with a free request: the key's own
+        details. Raises `SpeechError`."""
+        with _speech_errors("/key"):
+            response = await self._client.get("/key", headers=self._headers)
+            response.raise_for_status()
+
     async def aclose(self) -> None:
         await self._client.aclose()
 
@@ -195,12 +210,6 @@ def _speech_errors(path: str) -> Iterator[None]:
 
 
 class OpenRouterSpeechToText(_OpenRouterAudio):
-    async def warm_up(self) -> None:
-        # The key's own details: free, and it opens the connection the transcriptions reuse.
-        with _speech_errors("/key"):
-            response = await self._client.get("/key", headers=self._headers)
-            response.raise_for_status()
-
     async def transcribe(self, audio: bytes) -> str:
         # MAI Transcribe takes Ogg Opus as well as WAV (not WebM nor MP4); the browser sends
         # Ogg where it can encode it, ~12 times smaller.

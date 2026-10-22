@@ -115,7 +115,7 @@ async def test_a_connection_lost_mid_speech_raises_after_what_arrived():
         await anext(speech)
 
 
-async def test_warming_up_is_a_free_request_not_a_transcription():
+async def test_warming_up_is_a_free_request_not_a_paid_one():
     requests: list[httpx.Request] = []
 
     await transcriber(requests).warm_up()

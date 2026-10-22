@@ -63,13 +63,14 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
     # The conversation a connection asked to resume, until its `resume` message arrives.
     _resume_id: UUID | None = None
     _resume_deadline: asyncio.Task[None] | None = None
-    # The transcription's connection is opened as the call starts (while the greeting plays)
-    # and kept open with a free request this often, since OpenRouter closes idle connections
-    # after 80-120 s; for as long as the declarant did something in the last `keep_ready_s`.
+    # The connections to the providers (STT, LLM, TTS) are opened as the call starts (while
+    # the greeting plays) and kept open with a free request this often, since OpenRouter
+    # closes idle connections after 80-120 s; for as long as the declarant did something in
+    # the last `keep_warm_s`.
     warm_up_every_s = 60.0
-    keep_ready_s = 300.0
+    keep_warm_s = 300.0
     _last_activity = 0.0
-    _ready_to_listen: asyncio.Task[None] | None = None
+    _warm_connections: asyncio.Task[None] | None = None
 
     def __init__(self, *args: Any, services: ConsumerServices, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -89,7 +90,7 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         # The route's uuid converter already parsed it.
         conversation_id: UUID | None = self.scope["url_route"]["kwargs"].get("conversation_id")
         if conversation_id is None:
-            self._keep_ready_to_listen()
+            self._keep_connections_warm()
             result = await self._services.engine.start()
             token = await self._services.access.issue_token(result.conversation.id)
             await self._join(result.conversation.id)
@@ -130,13 +131,13 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             await self.close(code=NOT_FOUND_CLOSE_CODE)
             return
         await self._join(conversation.id)
-        self._keep_ready_to_listen()
+        self._keep_connections_warm()
         await self.send_json({"type": "snapshot", "conversation": conversation_view(conversation)})
 
     async def disconnect(self, code: int) -> None:
         self._cancel_resume_deadline()
-        if self._ready_to_listen is not None:
-            self._ready_to_listen.cancel()
+        if self._warm_connections is not None:
+            self._warm_connections.cancel()
         if hasattr(self, "conversation_id"):
             group = group_name(self.conversation_id)
             await self.channel_layer.group_discard(group, self.channel_name)
@@ -151,7 +152,7 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
                 await self._apologise()
                 await self.close(code=INTERNAL_ERROR_CLOSE_CODE)
             return
-        self._keep_ready_to_listen()
+        self._keep_connections_warm()
         try:
             await self._receive(content)
         except Exception:
@@ -218,15 +219,15 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
                 extra={"conversation_id": str(self.conversation_id)},
             )
 
-    def _keep_ready_to_listen(self) -> None:
-        """On the declarant's activity: (re)starts keeping the transcription ready."""
+    def _keep_connections_warm(self) -> None:
+        """On the declarant's activity: (re)starts keeping the provider connections open."""
         self._last_activity = time.monotonic()
-        if self._ready_to_listen is None or self._ready_to_listen.done():
-            self._ready_to_listen = asyncio.create_task(self._stay_ready_to_listen())
+        if self._warm_connections is None or self._warm_connections.done():
+            self._warm_connections = asyncio.create_task(self._stay_warm())
 
-    async def _stay_ready_to_listen(self) -> None:
-        while time.monotonic() - self._last_activity < self.keep_ready_s:
-            await self._services.voice.get_ready_to_listen()
+    async def _stay_warm(self) -> None:
+        while time.monotonic() - self._last_activity < self.keep_warm_s:
+            await self._services.warm_up_connections()
             await asyncio.sleep(self.warm_up_every_s)
 
     def _cancel_resume_deadline(self) -> None:

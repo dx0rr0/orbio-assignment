@@ -22,10 +22,6 @@ from tests.engine.fakes import RecordingTelemetry, ScriptedLLM, no_sleep
 class FakeSpeechToText:
     def __init__(self) -> None:
         self.transcripts: list[str | Exception] = []
-        self.warm_ups = 0
-
-    async def warm_up(self) -> None:
-        self.warm_ups += 1
 
     async def transcribe(self, wav: bytes) -> str:
         step = self.transcripts.pop(0)
@@ -107,7 +103,16 @@ def summary_requests() -> list[str]:
 
 
 @pytest.fixture
-def services(engine, stt, tts, repository, summary_requests) -> ConsumerServices:
+def warm_ups() -> list[None]:
+    """One entry per time the provider connections were warmed up."""
+    return []
+
+
+@pytest.fixture
+def services(engine, stt, tts, repository, summary_requests, warm_ups) -> ConsumerServices:
+    async def warm_up_connections() -> None:
+        warm_ups.append(None)
+
     return ConsumerServices(
         engine=engine,
         voice=Voice(stt, tts),
@@ -115,6 +120,7 @@ def services(engine, stt, tts, repository, summary_requests) -> ConsumerServices
         telemetry=NullTelemetry(),
         access=access,
         request_summary=summary_requests.append,
+        warm_up_connections=warm_up_connections,
     )
 
 

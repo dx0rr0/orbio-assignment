@@ -74,20 +74,20 @@ async def test_connecting_starts_a_conversation_with_a_spoken_greeting(applicati
     await communicator.disconnect()
 
 
-async def test_a_new_call_gets_the_transcription_ready_at_once(application, stt):
+async def test_a_new_call_warms_up_the_provider_connections_at_once(application, warm_ups):
     communicator = await start(application)
     await receive_until(communicator, "audio_end")
 
-    assert stt.warm_ups == 1
+    assert len(warm_ups) == 1
     await communicator.disconnect()
 
 
 class QuickToCoolConsumer(ConversationConsumer):
     warm_up_every_s = 0.05
-    keep_ready_s = 0.3
+    keep_warm_s = 0.3
 
 
-async def test_the_transcription_is_kept_ready_while_the_call_is_active(services, stt, llm):
+async def test_the_connections_are_kept_warm_while_the_call_is_active(services, warm_ups, llm):
     application = URLRouter(
         [path("ws/conversations/", QuickToCoolConsumer.as_asgi(services=services))]
     )
@@ -95,16 +95,16 @@ async def test_the_transcription_is_kept_ready_while_the_call_is_active(services
     await receive_until(communicator, "audio_end")
 
     await asyncio.sleep(0.6)  # warmed every 0.05 s for 0.3 s, then nothing
-    cooled = stt.warm_ups
+    cooled = len(warm_ups)
     assert 4 <= cooled <= 8
     await asyncio.sleep(0.2)
-    assert stt.warm_ups == cooled
+    assert len(warm_ups) == cooled
     llm.then(say("¿Me indica su número de póliza?"))
     await communicator.send_json_to({"type": "text", "text": "Hola"})
     await receive_until(communicator, "claim_updated")
     await asyncio.sleep(0.1)
 
-    assert stt.warm_ups > cooled  # any message from the declarant starts it again
+    assert len(warm_ups) > cooled  # any message from the declarant starts it again
     await communicator.disconnect()
 
 
