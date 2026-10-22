@@ -58,8 +58,9 @@ async def test_transcription_is_stripped():
     assert await Voice(Speech(), Speech()).transcribe(b"x") == "hola"
 
 
-async def test_failed_transcription_becomes_an_empty_utterance():
-    assert await Voice(Speech(fail=True), Speech()).transcribe(b"x") == ""
+async def test_failed_transcription_is_none():
+    # Not "": the engine tells an STT outage from an utterance that could not be understood.
+    assert await Voice(Speech(fail=True), Speech()).transcribe(b"x") is None
 
 
 async def test_all_replies_of_a_turn_are_spoken_at_once_using_their_speech_text():

@@ -160,7 +160,8 @@ class ConversationEngine:
         conversation, replies = _say(Conversation.start(self._clock()), templates.greeting())
         return TurnResult(await self._repository.create(conversation), replies)
 
-    async def handle_text(self, conversation_id: UUID, utterance: str) -> TurnResult:
+    async def handle_text(self, conversation_id: UUID, utterance: str | None) -> TurnResult:
+        """`utterance` is None if the declarant's speech could not be transcribed."""
         now = self._clock()
         conversation = await self._repository.get(conversation_id)
         if not conversation.claim.status.is_final:
@@ -179,11 +180,15 @@ class ConversationEngine:
             return TurnResult(conversation, (reply,), previous_status=status)
 
         previous_status = conversation.claim.status
-        if is_unintelligible(utterance):
-            conversation, replies = self._unintelligible(conversation)
+        if utterance is None or is_unintelligible(utterance):
+            conversation, replies = self._unintelligible(
+                conversation, transcribed=utterance is not None
+            )
         else:
             conversation = conversation.add(Message(role=Role.USER, content=utterance.strip()))
-            conversation = conversation.model_copy(update={"unintelligible_streak": 0})
+            conversation = conversation.model_copy(
+                update={"unintelligible_streak": 0, "transcription_failure_streak": 0}
+            )
             conversation, replies = await self._converse(conversation, _Turn(now))
 
         conversation = conversation.model_copy(update={"updated_at": now})
@@ -201,13 +206,20 @@ class ConversationEngine:
     # --- turn kinds -----------------------------------------------------------------------
 
     def _unintelligible(
-        self, conversation: Conversation
+        self, conversation: Conversation, *, transcribed: bool
     ) -> tuple[Conversation, tuple[BotMessage, ...]]:
         streak = conversation.unintelligible_streak + 1
-        conversation = conversation.model_copy(update={"unintelligible_streak": streak})
+        failures = 0 if transcribed else conversation.transcription_failure_streak + 1
+        conversation = conversation.model_copy(
+            update={"unintelligible_streak": streak, "transcription_failure_streak": failures}
+        )
         if streak < MAX_REPEAT_REQUESTS:
             return _say(conversation, templates.ask_to_repeat())
-        claim = close(conversation.claim, ClaimStatus.ESCALATED, ClosureReason.RETRIES_EXHAUSTED)
+        # Not one of them could be transcribed: the system failed, not the declarant's answers.
+        reason = (
+            ClosureReason.SYSTEM_ERROR if failures >= streak else ClosureReason.RETRIES_EXHAUSTED
+        )
+        claim = close(conversation.claim, ClaimStatus.ESCALATED, reason)
         conversation = conversation.model_copy(update={"claim": claim})
         return _say(conversation, templates.closed(claim, policy=None))
 

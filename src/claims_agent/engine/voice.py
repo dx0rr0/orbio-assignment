@@ -1,5 +1,5 @@
 """Speech at the edges of a turn. Failures degrade instead of breaking the turn: a failed
-transcription counts as an unintelligible utterance, a failed synthesis as a text-only reply.
+transcription is answered as an unintelligible utterance, a failed synthesis as a text-only reply.
 Identifiers in whatever is synthesized are spelled out (`speech_text`). The speech of the fixed
 messages (the greeting first) is synthesized once per process and replayed after that: instant
 and free."""
@@ -75,15 +75,15 @@ class Voice:
         # restart, which empties it.
         self._kept: dict[str, tuple[bytes, ...]] = {}
 
-    async def transcribe(self, audio: bytes) -> str:
-        """The transcription, or "" if it failed (the engine then asks to repeat)."""
+    async def transcribe(self, audio: bytes) -> str | None:
+        """The transcription, or None if it failed (the engine then asks to repeat)."""
         with self._telemetry.span("stt", input={"audio_bytes": len(audio)}) as span:
             try:
                 text = (await self._stt.transcribe(audio)).strip()
             except SpeechError as error:
                 logger.exception("Transcription failed")
                 span.update(metadata={"error": str(error)})
-                return ""
+                return None
             span.update(output=text)
             return text
 

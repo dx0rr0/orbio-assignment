@@ -178,7 +178,8 @@ def apply_update(
 
     return UpdateResult(
         claim=_next_status(updated, identified_policy(updated, known_policy)),
-        accepted=accepted,
+        # A value dropped because its field does not apply was not kept.
+        accepted=tuple(name for name in accepted if name not in inapplicable),
         rejected=errors,
     )
 

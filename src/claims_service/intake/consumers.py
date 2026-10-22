@@ -9,6 +9,8 @@ Server → client:
     audio_continued, audio_end, error
 
 The client's messages are typed in `protocol`; the server's events are built in `presenters`.
+Every turn ends with `claim_updated`, a failed one too (after the apology), so the client knows
+when it may speak again; a message that starts no turn gets an `error` instead.
 
 The speech of a reply is sent in pieces as it arrives from the provider (sentences are
 synthesized at once, but sent in order): `audio` carries the first piece and starts a new
@@ -28,6 +30,7 @@ so turns of one connection never overlap.
 import asyncio
 import base64
 import binascii
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -161,6 +164,19 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             group = group_name(self._conversation_id)
             await self.channel_layer.group_discard(group, self.channel_name)
 
+    async def receive(
+        self, text_data: str | None = None, bytes_data: bytes | None = None, **kwargs: object
+    ) -> None:
+        # Channels raises on a binary frame or text that is not JSON, which would end the call;
+        # they get the answer any other unreadable message gets.
+        content: object = None
+        if text_data:
+            try:
+                content = await self.decode_json(text_data)
+            except json.JSONDecodeError:
+                content = None
+        await self.receive_json(content, **kwargs)
+
     async def receive_json(self, content: object, **kwargs: object) -> None:
         message = parse_client_message(content)
         conversation_id = self._conversation_id
@@ -181,6 +197,7 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             # stored before this message, so the declarant can say it again.
             logger.exception("Could not handle the message", extra=self._log_context())
             await self._apologise()
+            await self._end_failed_turn(conversation_id)
 
     async def _receive(self, conversation_id: UUID, message: ClientMessage | None) -> None:
         match message:
@@ -198,20 +215,22 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
                     conversation_id, "turn", input={"audio_bytes": len(audio)}
                 ) as trace:
                     utterance = await self._services.voice.transcribe(audio)
-                    await self.send_json(transcript_event(utterance))
+                    await self.send_json(transcript_event("" if utterance is None else utterance))
                     await self._turn(conversation_id, utterance, reply_audio=True, trace=trace)
             case _:
                 # Not a message at all, or a `resume` once the connection watches one.
                 await self._error(error_messages.UNREADABLE_MESSAGE)
 
     async def _turn(
-        self, conversation_id: UUID, utterance: str, *, reply_audio: bool, trace: Span
+        self, conversation_id: UUID, utterance: str | None, *, reply_audio: bool, trace: Span
     ) -> None:
+        """`utterance` is None if the declarant's speech could not be transcribed."""
         try:
             result = await self._services.engine.handle_text(conversation_id, utterance)
         except ConcurrentUpdateError:
             # Another turn of the same conversation (e.g. a second tab) saved first.
             await self.send_json(bot_message_event(templates.technical_problem()))
+            await self._end_failed_turn(conversation_id)
             return
         trace.update(
             output=[reply.text for reply in result.replies],
@@ -302,6 +321,16 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
     async def _apologise(self) -> None:
         """After an unexpected error, apologise from the template."""
         await self.send_json(bot_message_event(templates.technical_problem()))
+
+    async def _end_failed_turn(self, conversation_id: UUID) -> None:
+        """After the apology for a failed turn, the claim as stored: like every turn, it ends
+        with `claim_updated`, which tells the client the agent is listening again."""
+        try:
+            conversation = await self._services.repository.get(conversation_id)
+        except Exception:
+            logger.exception("Could not reload the conversation", extra=self._log_context())
+            return
+        await self.send_json(claim_updated_event(conversation))
 
     async def _error(self, message: str) -> None:
         await self.send_json(error_event(message))

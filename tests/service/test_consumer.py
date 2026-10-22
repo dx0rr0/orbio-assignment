@@ -1,7 +1,7 @@
 import asyncio
 import base64
 import threading
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,6 +12,7 @@ from django.urls import path
 
 from claims_agent.engine import templates
 from claims_agent.engine.tools import CONFIRM_CLAIM, UPDATE_CLAIM
+from claims_agent.engine.turns import MAX_REPEAT_REQUESTS
 from claims_agent.ports import ConcurrentUpdateError, SpeechError
 from claims_service.intake import consumers
 from claims_service.intake.consumers import NOT_FOUND_CLOSE_CODE, ConversationConsumer
@@ -233,6 +234,19 @@ async def test_failed_transcription_asks_to_repeat(application, llm, stt):
     await communicator.disconnect()
 
 
+async def test_an_stt_outage_escalates_as_a_system_error(application, stt):
+    communicator, _ = await started_conversation(application)
+    stt.transcripts.extend([SpeechError("STT down")] * MAX_REPEAT_REQUESTS)
+
+    for _ in range(MAX_REPEAT_REQUESTS):
+        await communicator.send_json_to({"type": "audio", "data": base64.b64encode(b"x").decode()})
+        events = await receive_until(communicator, "audio_end")
+
+    claim = events[2]["claim"]
+    assert (claim["status"], claim["closure_reason"]) == ("escalated", "system_error")
+    await communicator.disconnect()
+
+
 async def test_failed_synthesis_still_sends_the_text(application, llm, tts):
     communicator, _ = await started_conversation(application)
     tts.fail = True
@@ -248,10 +262,20 @@ async def test_failed_synthesis_still_sends_the_text(application, llm, tts):
     await communicator.disconnect()
 
 
+@dataclass(frozen=True)
+class Frame:
+    """A WebSocket frame sent as it is rather than as JSON."""
+
+    text_data: str | None = None
+    bytes_data: bytes | None = None
+
+
 @pytest.mark.parametrize(
     ("message", "error"),
     [
         # The interface shows these to the declarant, so they are in Spanish.
+        (Frame(text_data="{not json"), "No se ha podido leer el mensaje"),
+        (Frame(bytes_data=b"\x00\x01"), "No se ha podido leer el mensaje"),
         ([1, 2], "No se ha podido leer el mensaje"),
         ({"type": "video"}, "No se ha podido leer el mensaje"),
         ({"type": "text"}, "No se ha podido leer el mensaje"),
@@ -268,12 +292,19 @@ async def test_failed_synthesis_still_sends_the_text(application, llm, tts):
 async def test_malformed_messages_get_an_error_and_no_turn(application, llm, message, error):
     communicator, _ = await started_conversation(application)
 
-    await communicator.send_json_to(message)
+    if isinstance(message, Frame):
+        await communicator.send_to(text_data=message.text_data, bytes_data=message.bytes_data)
+    else:
+        await communicator.send_json_to(message)
     event = await communicator.receive_json_from(timeout=5)
 
     assert event["type"] == "error"
     assert error in event["message"]
     assert llm.requests == []
+    # The call goes on.
+    llm.then(say("¿Me indica su número de póliza?"))
+    await communicator.send_json_to({"type": "text", "text": "Hola"})
+    assert (await communicator.receive_json_from(timeout=5))["type"] == "bot_message"
     await communicator.disconnect()
 
 
@@ -473,6 +504,9 @@ async def test_an_unexpected_error_in_a_turn_apologises_and_keeps_the_socket(eng
 
     assert event["type"] == "bot_message"
     assert event["text"] == templates.technical_problem().text
+    # As every turn, it ends with the claim (as stored), which lets the declarant talk again.
+    ended = await communicator.receive_json_from(timeout=5)
+    assert (ended["type"], ended["claim"]["status"]) == ("claim_updated", "in_progress")
     await communicator.send_json_to({"type": "text", "text": "¿Hola?"})
     assert (await communicator.receive_json_from(timeout=5))["type"] == "bot_message"
     await communicator.disconnect()
@@ -509,4 +543,6 @@ async def test_a_concurrent_update_asks_to_repeat_in_spanish(engine, services):
 
     assert event["type"] == "bot_message"
     assert event["text"] == templates.technical_problem().text
+    assert (await communicator.receive_json_from(timeout=5))["type"] == "claim_updated"
+    assert await communicator.receive_nothing()
     await communicator.disconnect()

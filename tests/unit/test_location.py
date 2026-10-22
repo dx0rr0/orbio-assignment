@@ -56,6 +56,30 @@ def test_location_with_an_invalid_spanish_province_is_rejected():
         parse_loss_location({"municipality": "Valencia", "province": "Levante", "country": "ES"})
 
 
+@pytest.mark.parametrize(
+    "country",
+    [
+        "Spain",
+        "España",
+        "ESPAÑA",
+        " españa ",
+        "Espanya",
+        "Espainia",
+        "ES",
+        "Reino de España",
+        # Regions some declarants give as their country.
+        "Catalunya",
+        "Euskadi",
+    ],
+)
+def test_spain_is_recognised_in_its_usual_spellings(country):
+    location = parse_loss_location(
+        {"municipality": "Girona", "province": "Girona", "country": country}
+    )
+    assert location.country == "España"
+    assert location.in_spain
+
+
 def test_location_abroad_parses_but_is_not_in_spain():
     location = parse_loss_location(
         {"municipality": "Oporto", "province": "Porto", "country": "Portugal"}

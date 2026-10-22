@@ -80,16 +80,17 @@ _ALIASES: dict[str, str] = {
 }
 
 
-def _key(name: str) -> str:
+def fold(name: str) -> str:
+    """`name` trimmed, without case or accents, to compare spellings."""
     decomposed = unicodedata.normalize("NFKD", name.strip().casefold())
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
 
 
-_LOOKUP: dict[str, str] = {_key(p): p for p in PROVINCES} | {
-    _key(alias): province for alias, province in _ALIASES.items()
+_LOOKUP: dict[str, str] = {fold(p): p for p in PROVINCES} | {
+    fold(alias): province for alias, province in _ALIASES.items()
 }
 
 
 def match_province(raw: str) -> str | None:
     """Canonical province name for `raw`, ignoring case and accents; None if it isn't one."""
-    return _LOOKUP.get(_key(raw))
+    return _LOOKUP.get(fold(raw))

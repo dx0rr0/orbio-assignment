@@ -257,3 +257,49 @@ def test_key_points_with_identifiers_nobody_gave_are_flagged(repository, notifie
 
     [warning] = [r for r in caplog.records if r.levelname == "WARNING"]
     assert "plate 9999ZZZ was never given" in warning.getMessage()
+
+
+# --- notifications ------------------------------------------------------------------------
+
+
+def watchers_unreachable(conversation: Conversation) -> None:
+    raise ConnectionError("redis is down")
+
+
+def test_a_failed_notification_does_not_fail_the_stored_summary(repository, llm, task_services):
+    tasks.configure(replace(task_services, notify=watchers_unreachable))
+    conversation = store(repository, idle=timedelta(0), claim=confirmed_claim())
+    llm.then(call(RECORD_KEY_POINTS, {"key_points": ["Rotura del parabrisas en la A-3."]}))
+
+    generate_claim_summary.apply(args=[str(conversation.id)])
+
+    stored = async_to_sync(repository.get)(conversation.id)
+    assert stored.summary is not None
+    assert not stored.summary_failed
+    assert len(llm.requests) == 1  # not retried either
+
+
+def test_a_failed_notification_does_not_stop_the_sweep(repository, task_services):
+    tasks.configure(replace(task_services, notify=watchers_unreachable))
+    idle = [store(repository, idle=ABANDONED_AFTER + timedelta(minutes=1)) for _ in range(2)]
+
+    assert sweep_abandoned_conversations() == 2
+
+    for conversation in idle:
+        claim = async_to_sync(repository.get)(conversation.id).claim
+        assert claim.closure_reason is ClosureReason.ABANDONED
+
+
+def test_a_failure_does_not_mark_a_summary_that_was_stored_as_failed(repository, llm):
+    conversation = store(repository, idle=timedelta(0), claim=confirmed_claim())
+    llm.then(call(RECORD_KEY_POINTS, {"key_points": ["Hecho."]}))
+    generate_claim_summary(str(conversation.id))
+
+    # E.g. an unexpected error once the summary was saved.
+    generate_claim_summary.on_failure(
+        RuntimeError("after saving"), "task-id", (str(conversation.id),), {}, None
+    )
+
+    stored = async_to_sync(repository.get)(conversation.id)
+    assert stored.summary is not None
+    assert not stored.summary_failed

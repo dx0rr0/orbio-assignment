@@ -1,15 +1,32 @@
 """Where the loss happened, normalized to way / municipality / province / country."""
 
-import unicodedata
 from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict
 
 from claims_agent.domain.errors import FieldError
-from claims_agent.domain.provinces import match_province
+from claims_agent.domain.provinces import fold, match_province
 
 SPAIN = "España"
-_SPAIN_NAMES = {"espana", "spain", "es", "esp"}
+# Folded (`fold`). Also the regions some declarants give as their country: any other country
+# is taken as abroad.
+_SPAIN_NAMES = {
+    "espana",
+    "spain",
+    "es",
+    "esp",
+    "espanya",
+    "espainia",
+    "reino de espana",
+    "kingdom of spain",
+    "catalunya",
+    "cataluna",
+    "catalonia",
+    "euskadi",
+    "pais vasco",
+    "galicia",
+    "galiza",
+}
 
 
 class LossLocation(BaseModel):
@@ -26,8 +43,7 @@ class LossLocation(BaseModel):
 
 
 def _is_spain(country: str) -> bool:
-    decomposed = unicodedata.normalize("NFKD", country.strip().casefold())
-    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)) in _SPAIN_NAMES
+    return " ".join(fold(country).split()) in _SPAIN_NAMES
 
 
 def _optional_text(raw: Mapping[str, object], key: str) -> str | None:

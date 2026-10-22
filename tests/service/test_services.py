@@ -1,6 +1,7 @@
 import pytest
 
 from claims_agent.ports import LLMError, SpeechError
+from claims_service.intake import services
 from claims_service.intake.services import connections_warm_up
 
 
@@ -27,3 +28,12 @@ async def test_a_failed_warm_up_is_logged_and_the_rest_still_warm_up(caplog):
 async def test_an_unexpected_error_is_not_hidden():
     with pytest.raises(ValueError, match="bug"):
         await connections_warm_up(Client(ValueError("bug")))()
+
+
+@pytest.mark.parametrize("build", [services.for_consumer, services.for_tasks])
+def test_without_an_openrouter_key_the_service_does_not_start(settings, build):
+    # Rather than start and apologise on every turn.
+    settings.OPENROUTER_API_KEY = ""
+
+    with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY"):
+        build()

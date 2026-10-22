@@ -183,6 +183,24 @@ def test_the_errors_of_a_field_that_no_longer_applies_are_dropped():
     assert claim.failed_attempts == {}
 
 
+@pytest.mark.parametrize(
+    ("claim", "proposed"),
+    [
+        (Claim(driver_is_policyholder=True), {"driver_name": "Pedro García"}),
+        (Claim(loss_type=LossType.BROKEN_GLASS), {"other_vehicle_plate": "5678 FGH"}),
+        (Claim(), {"driver_is_policyholder": True, "driver_name": "Pedro García"}),
+    ],
+)
+def test_a_value_dropped_because_it_does_not_apply_is_not_reported_as_accepted(claim, proposed):
+    result = apply_update(claim, proposed, policy=POLICY, now=NOW)
+
+    kept = {name for name in proposed if getattr(result.claim, name) is not None}
+    assert set(result.accepted) == kept
+    # Nor is it a failed attempt: it was not wrong, just not needed.
+    assert result.rejected == {}
+    assert result.claim.failed_attempts == {}
+
+
 def test_conditional_field_mentioned_before_its_condition_is_kept():
     claim = update(driver_name="Pedro García").claim
     assert claim.driver_name == "Pedro García"

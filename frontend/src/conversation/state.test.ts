@@ -49,6 +49,17 @@ describe('reducer', () => {
     ])
   })
 
+  it('stops waiting after a failed turn too, which also ends with the claim', () => {
+    let state = reducer(initialState, { type: 'sent', text: 'Hola' })
+    const apology = 'Disculpe, he tenido un problema técnico.'
+    state = reducer(state, { type: 'server', event: { type: 'bot_message', text: apology, alert: false } })
+    state = reducer(state, {
+      type: 'server',
+      event: { type: 'claim_updated', claim: claim('in_progress'), summary: null },
+    })
+    expect(state).toMatchObject({ awaitingReply: false, error: null })
+  })
+
   it('replaces everything with a snapshot', () => {
     const state = reducer(
       { ...initialState, transcript: [{ role: 'agent', text: 'viejo' }] },

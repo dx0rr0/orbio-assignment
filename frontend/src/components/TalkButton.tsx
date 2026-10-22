@@ -36,7 +36,9 @@ export function TalkButton({
     if (!recording) return
     await starting.current
     setRecordingState(false)
-    onUtterance(await recorder.current.stop())
+    const audio = await recorder.current.stop()
+    // None if the microphone could not be opened: its error is shown, nothing is sent.
+    if (audio !== null) onUtterance(audio)
   }
 
   const label = recording ? 'Suelte para enviar' : 'Mantenga pulsado para hablar'

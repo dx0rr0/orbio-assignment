@@ -74,6 +74,16 @@ def notify_watchers(conversation: Conversation) -> None:
     async_to_sync(get_channel_layer().group_send)(group_name(conversation.id), message)
 
 
+def _notify(services: TaskServices, conversation: Conversation) -> None:
+    # Best effort: the change is already saved, and a watcher sees it when it reconnects.
+    try:
+        services.notify(conversation)
+    except Exception:
+        logger.exception(
+            "Could not notify the watchers", extra={"conversation_id": str(conversation.id)}
+        )
+
+
 class _SummaryTask(Task):
     def on_failure(
         self,
@@ -83,8 +93,9 @@ class _SummaryTask(Task):
         kwargs: dict[str, object],
         einfo: object,
     ) -> None:
-        """After the last retry: say so, and mark the conversation so that nobody waits for a
-        summary (nor `queue_missing_summaries` queues it again)."""
+        """On an exception the task does not retry (any other, or the last retry's): say so,
+        and mark the conversation so that nobody waits for a summary (nor
+        `queue_missing_summaries` queues it again)."""
         conversation_id = args[0]
         logger.error(
             "Claim summary failed after retries: %s",
@@ -95,6 +106,8 @@ class _SummaryTask(Task):
 
         async def mark_failed() -> None:
             conversation = await repository.get(UUID(conversation_id))
+            if conversation.summary is not None:
+                return  # it failed after the summary was saved
             await repository.save(conversation.model_copy(update={"summary_failed": True}))
 
         try:
@@ -135,7 +148,7 @@ def generate_claim_summary(conversation_id: str) -> None:
         telemetry.flush()
     if conversation is not None:
         logger.info("Claim summary generated", extra={"conversation_id": conversation_id})
-        services.notify(conversation)
+        _notify(services, conversation)
 
 
 @shared_task
@@ -156,7 +169,7 @@ def sweep_abandoned_conversations() -> int:
             continue
         closed += 1
         logger.info("Conversation abandoned", extra={"conversation_id": str(conversation.id)})
-        services.notify(saved)
+        _notify(services, saved)
     return closed
 
 

@@ -52,7 +52,7 @@ browser ──Ogg Opus────▶ WebSocket consumer ──▶ STT ──▶
 
 **Stateless servers.** A turn loads the conversation, processes it and saves it with an optimistic version check, so any process can serve any turn. A turn marks the conversation as active (a versioned save) before it calls the LLM, so the abandonment sweep, which closes with the same conditional update, skips a conversation that is receiving a turn; if the sweep closed it first, the turn tells the declarant the conversation is closed. Claim references come from an atomic Postgres upsert.
 
-**Failure handling.** An empty or unintelligible transcription is answered without calling the LLM. LLM errors are retried with backoff; if they persist, the agent apologises and keeps the conversation, and three failed turns in a row escalate it. Three unintelligible utterances in a row escalate it too. Invalid tool calls go back to the LLM as errors. A failed transcription counts as unintelligible, and a failed synthesis ends the audio there: the text of every reply is always sent.
+**Failure handling.** An empty or unintelligible transcription is answered without calling the LLM. LLM errors are retried with backoff; if they persist, the agent apologises and keeps the conversation, and three failed turns in a row escalate it. Three unintelligible utterances in a row escalate it too. Invalid tool calls go back to the LLM as errors. A failed transcription is answered as an unintelligible one (three in a row escalate it as a system error), and a failed synthesis ends the audio there: the text of every reply is always sent.
 
 ## Testing
 

@@ -552,6 +552,33 @@ async def test_repeated_unintelligible_utterances_escalate(engine, conversation_
     assert claim.closure_reason is ClosureReason.RETRIES_EXHAUSTED
 
 
+async def test_failed_transcriptions_ask_to_repeat_and_escalate_as_a_system_error(
+    engine, llm, conversation_id
+):
+    # None: the speech could not be transcribed (an STT outage, not the declarant's doing).
+    results = [await engine.handle_text(conversation_id, None) for _ in range(MAX_REPEAT_REQUESTS)]
+
+    assert llm.requests == []
+    assert [texts(r) for r in results[:-1]] == [[templates.ask_to_repeat().text]] * (
+        MAX_REPEAT_REQUESTS - 1
+    )
+    claim = results[-1].conversation.claim
+    assert claim.status is ClaimStatus.ESCALATED
+    assert claim.closure_reason is ClosureReason.SYSTEM_ERROR
+    assert texts(results[-1]) == [templates.closed(claim, policy=None).text]
+
+
+async def test_unintelligible_utterances_among_failed_transcriptions_escalate_as_bad_data(
+    engine, conversation_id
+):
+    for utterance in [None, " ... ", None]:
+        result = await engine.handle_text(conversation_id, utterance)
+
+    claim = result.conversation.claim
+    assert claim.status is ClaimStatus.ESCALATED
+    assert claim.closure_reason is ClosureReason.RETRIES_EXHAUSTED
+
+
 async def test_an_understood_utterance_resets_the_unintelligible_count(
     engine, llm, conversation_id
 ):

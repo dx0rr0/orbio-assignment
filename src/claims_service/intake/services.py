@@ -86,6 +86,15 @@ def telemetry_from_settings() -> Telemetry:
     return LangfuseTelemetry(get_client())
 
 
+def _openrouter_api_key() -> str:
+    # Checked where the providers are built, not when the settings load: the tests and CI
+    # run without a key, with fake providers.
+    key: str = settings.OPENROUTER_API_KEY
+    if not key:
+        raise RuntimeError("OPENROUTER_API_KEY is empty: set it in .env (see .env.example)")
+    return key
+
+
 def chat_model_from_settings() -> OpenRouterChatModel:
     """With Langfuse on, the OpenAI client is its wrapper, which records each completion as
     a generation (tokens and cost) under the current span."""
@@ -93,7 +102,7 @@ def chat_model_from_settings() -> OpenRouterChatModel:
         # Importing it wraps the OpenAI client classes in place (`langfuse.openai.AsyncOpenAI`
         # is `openai.AsyncOpenAI`).
         importlib.import_module("langfuse.openai")
-    return OpenRouterChatModel.create(settings.OPENROUTER_API_KEY)
+    return OpenRouterChatModel.create(_openrouter_api_key())
 
 
 @asynccontextmanager
@@ -111,9 +120,10 @@ def speech_from_settings(
     resources: AsyncExitStack,
 ) -> tuple[OpenRouterSpeechToText, OpenRouterTextToSpeech]:
     """One pooled client per adapter for the whole process, closed with `resources`."""
-    stt = OpenRouterSpeechToText(settings.OPENROUTER_API_KEY)
+    key = _openrouter_api_key()
+    stt = OpenRouterSpeechToText(key)
     resources.push_async_callback(stt.aclose)
-    tts = OpenRouterTextToSpeech(settings.OPENROUTER_API_KEY)
+    tts = OpenRouterTextToSpeech(key)
     resources.push_async_callback(tts.aclose)
     return stt, tts
 
@@ -165,6 +175,8 @@ def for_api() -> DjangoConversationRepository:
 
 
 def for_tasks() -> TaskServices:
+    # Each summary builds its own chat model; say what is missing as the worker starts.
+    _openrouter_api_key()
     return TaskServices(
         repository=DjangoConversationRepository(),
         telemetry=telemetry_from_settings(),
