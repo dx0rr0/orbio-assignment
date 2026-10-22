@@ -4,43 +4,13 @@ import pytest
 
 from claims_agent.domain import MADRID, Claim, IncompleteClaimError, LossWindow, apply_update
 from claims_agent.engine.templates import (
-    BotMessage,
     confirm_coverage_value,
     display_plate,
     format_loss_window,
     read_back,
     read_back_changes,
-    spell_identifiers,
 )
-from tests.engine.fakes import COMPLETE, HAPPY_POLICY, NOW
-
-
-def window(start: datetime, end: datetime | None = None) -> LossWindow:
-    return LossWindow(start=start, end=end or start)
-
-
-@pytest.mark.parametrize(
-    ("text", "spoken"),
-    [
-        ("Póliza AUT-48213907.", "Póliza A, U, T, 48, 21, 39, 07."),
-        ("su póliza AUT48213907 y", "su póliza A, U, T, 48, 21, 39, 07 y"),
-        ("matrícula 4721 KLM.", "matrícula 47, 21, K, L, M."),
-        ("matrícula 4721KLM.", "matrícula 47, 21, K, L, M."),
-        ("referencia SIN-2026-000123.", "referencia S, I, N, 2026, 00, 01, 23."),
-    ],
-)
-def test_identifiers_are_spelled_out_for_speech(text: str, spoken: str):
-    assert spell_identifiers(text) == spoken
-
-
-def test_other_numbers_are_left_for_the_tts_to_read():
-    text = "El 21 de octubre de 2026 a las 09:00, en la calle Alcalá 1234."
-    assert spell_identifiers(text) == text
-
-
-def test_the_llms_replies_are_spoken_with_their_identifiers_spelled_out():
-    reply = BotMessage("Su póliza es AUT-48213907 y su matrícula 4721 KLM.", scripted=False)
-    assert reply.spoken == "Su póliza es A, U, T, 48, 21, 39, 07 y su matrícula 47, 21, K, L, M."
+from tests.support import COMPLETE, HAPPY_POLICY, NOW
 
 
 def test_current_plates_are_displayed_with_a_space_and_others_as_they_are():
@@ -48,35 +18,40 @@ def test_current_plates_are_displayed_with_a_space_and_others_as_they_are():
     assert display_plate("M1234AB") == "M1234AB"
 
 
-def test_instant_loss_window():
-    assert format_loss_window(window(datetime(2026, 10, 19, 19, 0, tzinfo=MADRID))) == (
-        "el 19 de octubre de 2026 a las 19:00"
-    )
-
-
-def test_same_day_loss_window():
-    start = datetime(2026, 10, 19, 8, 0, tzinfo=MADRID)
-    assert format_loss_window(window(start, start.replace(hour=14))) == (
-        "el 19 de octubre de 2026, entre las 08:00 y las 14:00"
-    )
-
-
-def test_a_whole_day_is_read_without_hours():
-    start = datetime(2026, 10, 21, 0, 0, tzinfo=MADRID)
-    assert format_loss_window(window(start, start.replace(hour=23, minute=59))) == (
-        "el 21 de octubre de 2026, sin hora concreta"
-    )
-    assert format_loss_window(window(start, datetime(2026, 10, 22, 23, 59, tzinfo=MADRID))) == (
-        "entre el 21 de octubre de 2026 y el 22 de octubre de 2026, sin hora concreta"
-    )
-
-
-def test_multi_day_loss_window_is_shown_in_madrid_time():
-    start = datetime.fromisoformat("2026-10-13T20:00+00:00")
-    end = datetime(2026, 10, 14, 8, 0, tzinfo=MADRID)
-    assert format_loss_window(window(start, end)) == (
-        "entre el 13 de octubre de 2026 a las 22:00 y el 14 de octubre de 2026 a las 08:00"
-    )
+@pytest.mark.parametrize(
+    ("start", "end", "said"),
+    [
+        (
+            datetime(2026, 10, 19, 19, 0, tzinfo=MADRID),
+            datetime(2026, 10, 19, 19, 0, tzinfo=MADRID),
+            "el 19 de octubre de 2026 a las 19:00",
+        ),
+        (
+            datetime(2026, 10, 19, 8, 0, tzinfo=MADRID),
+            datetime(2026, 10, 19, 14, 0, tzinfo=MADRID),
+            "el 19 de octubre de 2026, entre las 08:00 y las 14:00",
+        ),
+        # Whole days are said without hours.
+        (
+            datetime(2026, 10, 21, 0, 0, tzinfo=MADRID),
+            datetime(2026, 10, 21, 23, 59, tzinfo=MADRID),
+            "el 21 de octubre de 2026, sin hora concreta",
+        ),
+        (
+            datetime(2026, 10, 21, 0, 0, tzinfo=MADRID),
+            datetime(2026, 10, 22, 23, 59, tzinfo=MADRID),
+            "entre el 21 de octubre de 2026 y el 22 de octubre de 2026, sin hora concreta",
+        ),
+        # In Madrid time, whatever the offset it was given in.
+        (
+            datetime.fromisoformat("2026-10-13T20:00+00:00"),
+            datetime(2026, 10, 14, 8, 0, tzinfo=MADRID),
+            "entre el 13 de octubre de 2026 a las 22:00 y el 14 de octubre de 2026 a las 08:00",
+        ),
+    ],
+)
+def test_loss_windows_are_said_as_a_person_would(start: datetime, end: datetime, said: str):
+    assert format_loss_window(LossWindow(start=start, end=end)) == said
 
 
 def test_the_read_back_is_a_short_summary_of_the_loss():
@@ -109,7 +84,6 @@ def test_the_read_back_of_a_collision_says_the_other_vehicle_and_the_friendly_re
         "Hubo otro vehículo implicado, matrícula 1234 BCD, y no firmaron parte amistoso. "
         "¿Es correcto?"
     )
-    assert "matrícula 12, 34, B, C, D," in message.spoken
 
 
 def test_the_read_back_of_a_theft_says_whether_it_was_reported():
@@ -172,14 +146,19 @@ def test_several_corrected_fields_are_read_back_in_the_claim_order():
     )
 
 
-def test_a_corrected_identifier_is_spelled_out_for_speech():
+def test_a_corrected_plate_is_displayed_with_a_space():
     heard = corrected(Claim(), COMPLETE)
     claim = heard.model_copy(update={"plate": "4721KLN"})
 
-    message = read_back_changes(heard, claim)
+    assert "- Matrícula: 4721 KLN." in read_back_changes(heard, claim).text
 
-    assert "- Matrícula: 4721 KLN." in message.text
-    assert "Matrícula: 47, 21, K, L, N." in message.spoken
+
+def test_a_corrected_place_names_its_province_only_if_it_is_not_the_municipality():
+    heard = corrected(Claim(), COMPLETE)
+    valencia = {"municipality": "Valencia", "province": "Valencia", "country": "España"}
+    claim = corrected(heard, {"loss_location": valencia})
+
+    assert "- Lugar: Valencia.\n" in read_back_changes(heard, claim).text
 
 
 def test_a_corrections_list_is_spoken_without_its_dashes():

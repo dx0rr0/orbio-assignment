@@ -3,7 +3,8 @@ import pytest
 from claims_agent.adapters.memory import InMemoryConversationRepository
 from claims_agent.engine import ConversationEngine
 from claims_agent.seed import seed_policies
-from tests.engine.fakes import NOW, RecordingTelemetry, ScriptedLLM, no_sleep
+from tests.engine.fakes import RecordingTelemetry, ScriptedLLM, no_sleep
+from tests.support import NOW
 
 
 @pytest.fixture

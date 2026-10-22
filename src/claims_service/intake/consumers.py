@@ -8,6 +8,8 @@ Server → client:
     conversation_started, snapshot, transcript, bot_message, claim_updated, audio,
     audio_continued, audio_end, error
 
+The client's messages are typed in `protocol`; the server's events are built in `presenters`.
+
 The speech of a reply is sent in pieces as it arrives from the provider (sentences are
 synthesized at once, but sent in order): `audio` carries the first piece and starts a new
 reply, `audio_continued` the rest, to be played right after it. `data` is base64 raw PCM,
@@ -28,21 +30,34 @@ import base64
 import binascii
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager, aclosing
-from typing import Any
 from uuid import UUID
 
 from asgiref.sync import sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
+from pydantic import JsonValue
 
 from claims_agent.engine import TurnResult, templates
 from claims_agent.ports import ConcurrentUpdateError, ConversationNotFoundError, Span
 from claims_service.intake import error_messages
-from claims_service.intake.groups import group_name
+from claims_service.intake.groups import ClaimUpdatedMessage, group_name
 from claims_service.intake.presenters import (
+    audio_end_event,
+    audio_event,
     bot_message_event,
     claim_updated_event,
-    conversation_view,
+    conversation_started_event,
+    error_event,
+    snapshot_event,
+    transcript_event,
+)
+from claims_service.intake.protocol import (
+    AudioMessage,
+    ClientMessage,
+    ResumeMessage,
+    TextMessage,
+    parse_client_message,
 )
 from claims_service.intake.services import ConsumerServices
 
@@ -57,7 +72,6 @@ logger = logging.getLogger(__name__)
 
 
 class ConversationConsumer(AsyncJsonWebsocketConsumer):
-    conversation_id: UUID
     # How long a resuming client has to send its token.
     resume_timeout_s = 10.0
     # The conversation a connection asked to resume, until its `resume` message arrives.
@@ -72,9 +86,21 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
     _last_activity = 0.0
     _warm_connections: asyncio.Task[None] | None = None
 
-    def __init__(self, *args: Any, services: ConsumerServices, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: object,
+        services: ConsumerServices,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        **kwargs: object,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self._services = services
+        # What the resume deadline and the warm-ups keep time with, so tests can step them.
+        self._clock = clock
+        self._sleep = sleep
+        # The conversation this connection watches, once it started or resumed it.
+        self._conversation_id: UUID | None = None
 
     async def connect(self) -> None:
         await self.accept()
@@ -92,36 +118,29 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         if conversation_id is None:
             self._keep_connections_warm()
             result = await self._services.engine.start()
-            token = await self._services.access.issue_token(result.conversation.id)
-            await self._join(result.conversation.id)
-            await self.send_json(
-                {
-                    "type": "conversation_started",
-                    "conversation_id": str(self.conversation_id),
-                    "token": token,
-                }
-            )
-            with self._trace("greeting"):
+            started = result.conversation.id
+            token = await self._services.access.issue_token(started)
+            await self._join(started)
+            await self.send_json(conversation_started_event(started, token))
+            with self._trace(started, "greeting"):
                 await self._send_turn(result, reply_audio=True, greeting=True)
             return
         self._resume_id = conversation_id
         self._resume_deadline = asyncio.create_task(self._close_unless_resumed())
 
     async def _close_unless_resumed(self) -> None:
-        await asyncio.sleep(self.resume_timeout_s)
+        await self._sleep(self.resume_timeout_s)
         self._resume_id = None
         await self.close(code=NOT_FOUND_CLOSE_CODE)
 
-    async def _resume(self, content: Any) -> None:
+    async def _resume(self, message: ClientMessage | None) -> None:
         conversation_id, self._resume_id = self._resume_id, None
         self._cancel_resume_deadline()
         if conversation_id is None:
             return  # already refused, timed out or failed to start
-        is_resume = isinstance(content, dict) and content.get("type") == "resume"
-        token = content.get("token") if is_resume else None
         # A wrong token gets the same answer as an unknown id.
-        if not isinstance(token, str) or not await self._services.access.is_authorized(
-            conversation_id, token
+        if not isinstance(message, ResumeMessage) or not await self._services.access.is_authorized(
+            conversation_id, message.token
         ):
             await self.close(code=NOT_FOUND_CLOSE_CODE)
             return
@@ -132,21 +151,23 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             return
         await self._join(conversation.id)
         self._keep_connections_warm()
-        await self.send_json({"type": "snapshot", "conversation": conversation_view(conversation)})
+        await self.send_json(snapshot_event(conversation))
 
     async def disconnect(self, code: int) -> None:
         self._cancel_resume_deadline()
         if self._warm_connections is not None:
             self._warm_connections.cancel()
-        if hasattr(self, "conversation_id"):
-            group = group_name(self.conversation_id)
+        if self._conversation_id is not None:
+            group = group_name(self._conversation_id)
             await self.channel_layer.group_discard(group, self.channel_name)
 
-    async def receive_json(self, content: Any, **kwargs: Any) -> None:
-        if not hasattr(self, "conversation_id"):
+    async def receive_json(self, content: object, **kwargs: object) -> None:
+        message = parse_client_message(content)
+        conversation_id = self._conversation_id
+        if conversation_id is None:
             # Until it watches a conversation, a connection can only resume one.
             try:
-                await self._resume(content)
+                await self._resume(message)
             except Exception:
                 logger.exception("Could not resume the conversation", extra=self._log_context())
                 await self._apologise()
@@ -154,39 +175,40 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             return
         self._keep_connections_warm()
         try:
-            await self._receive(content)
+            await self._receive(conversation_id, message)
         except Exception:
             # The trace records the exception as it leaves it; the conversation is as it was
             # stored before this message, so the declarant can say it again.
             logger.exception("Could not handle the message", extra=self._log_context())
             await self._apologise()
 
-    async def _receive(self, content: Any) -> None:
-        if not isinstance(content, dict):
-            await self._error(error_messages.UNREADABLE_MESSAGE)
-            return
-        match content.get("type"):
-            case "text" if isinstance(content.get("text"), str):
-                if len(content["text"]) > MAX_TEXT_CHARS:
+    async def _receive(self, conversation_id: UUID, message: ClientMessage | None) -> None:
+        match message:
+            case TextMessage(text=text, reply_audio=reply_audio):
+                if len(text) > MAX_TEXT_CHARS:
                     await self._error(error_messages.TEXT_TOO_LONG)
                     return
-                with self._trace("turn", input={"text": content["text"]}) as trace:
-                    reply_audio = bool(content.get("reply_audio", False))
-                    await self._turn(content["text"], reply_audio=reply_audio, trace=trace)
-            case "audio" if isinstance(content.get("data"), str):
-                audio = await self._decode_audio(content["data"])
+                with self._trace(conversation_id, "turn", input={"text": text}) as trace:
+                    await self._turn(conversation_id, text, reply_audio=reply_audio, trace=trace)
+            case AudioMessage(data=data):
+                audio = await self._decode_audio(data)
                 if audio is None:
                     return
-                with self._trace("turn", input={"audio_bytes": len(audio)}) as trace:
+                with self._trace(
+                    conversation_id, "turn", input={"audio_bytes": len(audio)}
+                ) as trace:
                     utterance = await self._services.voice.transcribe(audio)
-                    await self.send_json({"type": "transcript", "text": utterance})
-                    await self._turn(utterance, reply_audio=True, trace=trace)
+                    await self.send_json(transcript_event(utterance))
+                    await self._turn(conversation_id, utterance, reply_audio=True, trace=trace)
             case _:
+                # Not a message at all, or a `resume` once the connection watches one.
                 await self._error(error_messages.UNREADABLE_MESSAGE)
 
-    async def _turn(self, utterance: str, *, reply_audio: bool, trace: Span) -> None:
+    async def _turn(
+        self, conversation_id: UUID, utterance: str, *, reply_audio: bool, trace: Span
+    ) -> None:
         try:
-            result = await self._services.engine.handle_text(self.conversation_id, utterance)
+            result = await self._services.engine.handle_text(conversation_id, utterance)
         except ConcurrentUpdateError:
             # Another turn of the same conversation (e.g. a second tab) saved first.
             await self.send_json(bot_message_event(templates.technical_problem()))
@@ -197,51 +219,51 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         )
         await self._send_turn(result, reply_audio=reply_audio)
         if result.confirmed_claim:
-            await self._request_summary()
+            await self._request_summary(conversation_id)
 
-    async def claim_updated(self, event: dict[str, Any]) -> None:
+    async def claim_updated(self, event: ClaimUpdatedMessage) -> None:
         """Pushed to the group by background tasks (summary, abandonment)."""
         await self.send_json(event["payload"])
 
     # --- helpers --------------------------------------------------------------------------
 
-    async def _request_summary(self) -> None:
+    async def _request_summary(self, conversation_id: UUID) -> None:
         # The claim is already confirmed and announced; a broker outage must not end the call,
         # and `queue_missing_summaries` queues it later. Publishing is blocking I/O, so it runs
         # off the event loop, and not in the thread the async ORM shares with other turns.
         try:
             await sync_to_async(self._services.request_summary, thread_sensitive=False)(
-                str(self.conversation_id)
+                str(conversation_id)
             )
         except Exception:
             logger.exception(
                 "Could not queue the claim summary",
-                extra={"conversation_id": str(self.conversation_id)},
+                extra={"conversation_id": str(conversation_id)},
             )
 
     def _keep_connections_warm(self) -> None:
         """On the declarant's activity: (re)starts keeping the provider connections open."""
-        self._last_activity = time.monotonic()
+        self._last_activity = self._clock()
         if self._warm_connections is None or self._warm_connections.done():
             self._warm_connections = asyncio.create_task(self._stay_warm())
 
     async def _stay_warm(self) -> None:
-        while time.monotonic() - self._last_activity < self.keep_warm_s:
+        while self._clock() - self._last_activity < self.keep_warm_s:
             await self._services.warm_up_connections()
-            await asyncio.sleep(self.warm_up_every_s)
+            await self._sleep(self.warm_up_every_s)
 
     def _cancel_resume_deadline(self) -> None:
         if self._resume_deadline is not None:
             self._resume_deadline.cancel()
             self._resume_deadline = None
 
-    def _trace(self, name: str, input: Any = None) -> AbstractContextManager[Span]:
-        return self._services.telemetry.trace(
-            name, session_id=str(self.conversation_id), input=input
-        )
+    def _trace(
+        self, conversation_id: UUID, name: str, input: JsonValue = None
+    ) -> AbstractContextManager[Span]:
+        return self._services.telemetry.trace(name, session_id=str(conversation_id), input=input)
 
     async def _join(self, conversation_id: UUID) -> None:
-        self.conversation_id = conversation_id
+        self._conversation_id = conversation_id
         await self.channel_layer.group_add(group_name(conversation_id), self.channel_name)
 
     async def _send_turn(
@@ -255,14 +277,12 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
         voice = self._services.voice
         # Nobody is waiting on an answer yet: the greeting is synthesized in one go.
         speech = voice.speak(result.replies) if greeting else voice.speak_in_chunks(result.replies)
-        mime = f"audio/pcm;rate={voice.sample_rate}"
-        kind = "audio"
+        continued = False
         async with aclosing(speech) as pieces:
             async for pcm in pieces:
-                data = base64.b64encode(pcm).decode("ascii")
-                await self.send_json({"type": kind, "mime": mime, "data": data})
-                kind = "audio_continued"
-        await self.send_json({"type": "audio_end"})
+                await self.send_json(audio_event(pcm, voice.sample_rate, continued=continued))
+                continued = True
+        await self.send_json(audio_end_event())
 
     async def _decode_audio(self, data: str) -> bytes | None:
         """The audio file's bytes, or None after telling the client what was wrong."""
@@ -276,12 +296,12 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             return None
 
     def _log_context(self) -> dict[str, str | None]:
-        conversation_id = getattr(self, "conversation_id", None)
-        return {"conversation_id": conversation_id and str(conversation_id)}
+        conversation_id = self._conversation_id
+        return {"conversation_id": None if conversation_id is None else str(conversation_id)}
 
     async def _apologise(self) -> None:
         """After an unexpected error, apologise from the template."""
         await self.send_json(bot_message_event(templates.technical_problem()))
 
     async def _error(self, message: str) -> None:
-        await self.send_json({"type": "error", "message": message})
+        await self.send_json(error_event(message))

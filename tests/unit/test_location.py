@@ -39,6 +39,18 @@ def test_location_in_spain_gets_canonical_province_and_country():
     assert location.in_spain
 
 
+def test_the_way_is_kept_trimmed():
+    location = parse_loss_location(
+        {
+            "way": " A-3, km 22 ",
+            "municipality": "Arganda del Rey",
+            "province": "Madrid",
+            "country": "España",
+        }
+    )
+    assert location.way == "A-3, km 22"
+
+
 def test_location_with_an_invalid_spanish_province_is_rejected():
     with pytest.raises(FieldError, match="not a Spanish province"):
         parse_loss_location({"municipality": "Valencia", "province": "Levante", "country": "ES"})

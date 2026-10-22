@@ -2,7 +2,6 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
 
 from claims_agent.domain import ClaimStatus, ClosureReason, LossType
 
@@ -14,28 +13,28 @@ class Scenario:
     status: ClaimStatus
     closure_reason: ClosureReason | None = None
     # Claim attributes and their expected values (callables check the value instead).
-    expect: dict[str, Any] = field(default_factory=dict)
+    expect: dict[str, object] = field(default_factory=dict)
     max_turns: int = 14
 
 
-def _starts_with(prefix: str) -> Callable[[Any], bool]:
-    def check(value: Any) -> bool:
+def _starts_with(prefix: str) -> Callable[[object], bool]:
+    def check(value: object) -> bool:
         return isinstance(value, str) and value.startswith(prefix)
 
     check.__name__ = f"starts with {prefix!r}"
     return check
 
 
-def _location_in(municipality: str) -> Callable[[Any], bool]:
-    def check(value: Any) -> bool:
+def _location_in(municipality: str) -> Callable[[object], bool]:
+    def check(value: object) -> bool:
         return getattr(value, "municipality", None) == municipality
 
     check.__name__ = f"in {municipality!r}"
     return check
 
 
-def _not_mentioning(word: str) -> Callable[[Any], bool]:
-    def check(value: Any) -> bool:
+def _not_mentioning(word: str) -> Callable[[object], bool]:
+    def check(value: object) -> bool:
         return isinstance(value, str) and word.lower() not in value.lower()
 
     check.__name__ = f"not mentioning {word!r}"

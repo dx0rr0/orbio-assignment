@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -24,6 +24,15 @@ def test_blank_end_collapses_to_an_instant(end):
 def test_datetime_without_offset_is_madrid_time():
     window = parse_loss_window({"start": "2026-10-19T20:00:00"}, NOW)
     assert window.start == datetime(2026, 10, 19, 20, 0, tzinfo=MADRID)
+
+
+def test_a_datetime_with_an_offset_keeps_it():
+    window = parse_loss_window({"start": "2026-10-19T20:00:00+00:00"}, NOW)
+    assert window.start == datetime(2026, 10, 19, 20, 0, tzinfo=UTC)
+
+
+def test_a_loss_happening_now_is_accepted():
+    assert parse_loss_window({"start": NOW.isoformat()}, NOW).start == NOW
 
 
 def test_end_later_than_now_is_clamped_to_now():
@@ -71,6 +80,11 @@ def _window(start: str, end: str) -> LossWindow:
         ("2025-12-31T23:59", "2025-12-31T23:59", Coverage.NOT_COVERED),
         ("2025-12-30T10:00", "2025-12-31T10:00", Coverage.NOT_COVERED),
         ("2025-12-31T22:00", "2026-01-01T08:00", Coverage.PARTIAL),
+        # The period ends at the last instant of its end date.
+        ("2026-12-31T20:00", "2026-12-31T23:59:59.999999", Coverage.COVERED),
+        # Windows that touch the period at one instant: the loss may have happened then.
+        ("2025-12-31T22:00", "2026-01-01T00:00", Coverage.PARTIAL),
+        ("2026-12-31T23:59:59.999999", "2027-01-01T08:00", Coverage.PARTIAL),
     ],
 )
 def test_coverage_against_inclusive_coverage_period(start, end, expected):

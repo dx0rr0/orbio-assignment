@@ -1,8 +1,8 @@
 """OpenRouter adapters for the chat, speech-to-text and text-to-speech ports."""
 
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from typing import Any, Self
+from typing import Self
 
 import httpx
 import httpx2
@@ -191,9 +191,12 @@ class _OpenRouterAudio:
     async def __aexit__(self, *exc_info: object) -> None:
         await self.aclose()
 
-    async def _post(self, path: str, **kwargs: Any) -> httpx.Response:
+    async def _post(
+        self, path: str, *, data: Mapping[str, str], files: Mapping[str, tuple[str, bytes, str]]
+    ) -> httpx.Response:
+        """A multipart form: `files` maps each field to (file name, content, media type)."""
         with _speech_errors(path):
-            response = await self._client.post(path, headers=self._headers, **kwargs)
+            response = await self._client.post(path, headers=self._headers, data=data, files=files)
             response.raise_for_status()
         return response
 

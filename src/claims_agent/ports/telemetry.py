@@ -1,21 +1,23 @@
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
-from typing import Any, Protocol
+from typing import Protocol
+
+from pydantic import JsonValue
 
 
 class Span(Protocol):
     # The result is ignored (Langfuse's spans return themselves).
-    def update(self, *, output: Any = None, metadata: Any = None) -> object: ...
+    def update(self, *, output: JsonValue = None, metadata: JsonValue = None) -> object: ...
 
 
 class Telemetry(Protocol):
     def trace(
-        self, name: str, *, session_id: str, input: Any = None
+        self, name: str, *, session_id: str, input: JsonValue = None
     ) -> AbstractContextManager[Span]:
         """Start a trace (one turn, one background task) within a session (a conversation)."""
         ...
 
-    def span(self, name: str, *, input: Any = None) -> AbstractContextManager[Span]:
+    def span(self, name: str, *, input: JsonValue = None) -> AbstractContextManager[Span]:
         """A step of the current trace."""
         ...
 
@@ -29,17 +31,17 @@ class Telemetry(Protocol):
 
 
 class _NullSpan:
-    def update(self, *, output: Any = None, metadata: Any = None) -> None:
+    def update(self, *, output: JsonValue = None, metadata: JsonValue = None) -> None:
         pass
 
 
 class NullTelemetry:
     @contextmanager
-    def trace(self, name: str, *, session_id: str, input: Any = None) -> Iterator[Span]:
+    def trace(self, name: str, *, session_id: str, input: JsonValue = None) -> Iterator[Span]:
         yield _NullSpan()
 
     @contextmanager
-    def span(self, name: str, *, input: Any = None) -> Iterator[Span]:
+    def span(self, name: str, *, input: JsonValue = None) -> Iterator[Span]:
         yield _NullSpan()
 
     def score(self, name: str, value: float, comment: str | None = None) -> None:

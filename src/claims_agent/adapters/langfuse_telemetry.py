@@ -7,9 +7,9 @@ context, like the spans opened here.
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
 
 from langfuse import Langfuse, propagate_attributes
+from pydantic import JsonValue
 
 from claims_agent.ports.telemetry import Span
 
@@ -19,7 +19,7 @@ class LangfuseTelemetry:
         self._client = client
 
     @contextmanager
-    def trace(self, name: str, *, session_id: str, input: Any = None) -> Iterator[Span]:
+    def trace(self, name: str, *, session_id: str, input: JsonValue = None) -> Iterator[Span]:
         with (
             self._client.start_as_current_observation(name=name, input=input) as root,
             propagate_attributes(session_id=session_id, trace_name=name),
@@ -27,7 +27,7 @@ class LangfuseTelemetry:
             yield root
 
     @contextmanager
-    def span(self, name: str, *, input: Any = None) -> Iterator[Span]:
+    def span(self, name: str, *, input: JsonValue = None) -> Iterator[Span]:
         with self._client.start_as_current_observation(name=name, input=input) as span:
             yield span
 

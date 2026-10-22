@@ -1,6 +1,6 @@
-"""Wiring of the engine to its adapters. The ASGI application (`for_consumer`) and each Celery
-worker process (`for_tasks`) build their dependencies here once and hand them in; tests and the
-evals build their own, with fakes."""
+"""Wiring of the engine to its adapters. The ASGI application (`for_consumer`), the HTTP API
+(`for_api`) and each Celery worker process (`for_tasks`) build their dependencies here once and
+hand them in; tests and the evals build their own, with fakes."""
 
 import asyncio
 import importlib
@@ -118,10 +118,6 @@ def speech_from_settings(
     return stt, tts
 
 
-def voice_from_settings(telemetry: Telemetry, resources: AsyncExitStack) -> Voice:
-    return Voice(*speech_from_settings(resources), telemetry)
-
-
 def connections_warm_up(*clients: ProviderClient) -> Callable[[], Awaitable[None]]:
     """Warms up all `clients` at once. A failure is logged and left to the client's next real
     request."""
@@ -162,6 +158,10 @@ def for_consumer() -> ConsumerServices:
         warm_up_connections=connections_warm_up(llm, stt, tts),
         resources=resources,
     )
+
+
+def for_api() -> DjangoConversationRepository:
+    return DjangoConversationRepository()
 
 
 def for_tasks() -> TaskServices:

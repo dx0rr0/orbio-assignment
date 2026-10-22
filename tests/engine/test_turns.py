@@ -1,11 +1,20 @@
 import asyncio
 import json
+from datetime import timedelta
 
-from claims_agent.domain import CLAIM_FIELDS, ClaimStatus, ClosureReason, Role, close
+import pytest
+
+from claims_agent.adapters.memory import InMemoryConversationRepository
+from claims_agent.domain import CLAIM_FIELDS, ClaimStatus, ClosureReason, LossType, Role, close
 from claims_agent.engine import ConversationEngine, templates, tools
 from claims_agent.engine.tools import CONFIRM_CLAIM, CONFIRM_VALUE, DECLARANT_REFUSES, UPDATE_CLAIM
-from claims_agent.engine.turns import MAX_LLM_FAILURES, MAX_REPEAT_REQUESTS
-from tests.engine.fakes import COMPLETE, IDENTIFICATION, LLM_DOWN, NEW_POLICY, call, calls, say
+from claims_agent.engine.turns import LLM_RETRY_DELAYS, MAX_LLM_FAILURES, MAX_REPEAT_REQUESTS
+from claims_agent.seed import seed_policies
+from tests.engine.fakes import LLM_DOWN, ScriptedLLM, call, calls, no_sleep, say
+from tests.support import COMPLETE, IDENTIFICATION, NEW_POLICY, NOW
+
+# The attempts of a turn whose LLM calls all fail.
+FAILED_TURN = [LLM_DOWN] * (len(LLM_RETRY_DELAYS) + 1)
 
 
 def texts(result) -> list[str]:
@@ -46,6 +55,7 @@ async def test_system_prompt_carries_the_claim_state_and_current_date(engine, ll
     await engine.handle_text(conversation_id, "AUT 48213907, matrícula 4721 KLM")
 
     first, second = llm.requests
+    assert first["tools"] == second["tools"] == tools.TOOLS
     assert "martes 2026-10-20 12:00" in first["system"]
     assert '"missing_fields_in_order": [\n    "policy_number"' in first["system"]
     assert '"policy_number": "AUT-48213907"' in second["system"]
@@ -66,7 +76,45 @@ async def test_policyholder_name_is_not_shared_with_a_plate_that_does_not_match(
     assert "María López Fernández" not in llm.requests[1]["system"]
 
 
+class LookupRecorder(InMemoryConversationRepository):
+    def __init__(self) -> None:
+        super().__init__(seed_policies(NOW.date()))
+        self.looked_up: list[str] = []
+
+    async def get_policy(self, number):
+        self.looked_up.append(number)
+        return await super().get_policy(number)
+
+
+async def test_the_policy_is_looked_up_only_for_a_number_and_not_used_before_the_plate(llm):
+    repository = LookupRecorder()
+    engine = ConversationEngine(llm=llm, repository=repository, clock=lambda: NOW, sleep=no_sleep)
+    conversation_id = (await engine.start()).conversation.id
+    llm.then(call(UPDATE_CLAIM, {"declarant_name": "María López"}), say("¿Su póliza?"))
+    llm.then(call(UPDATE_CLAIM, {"policy_number": "AUT-48213907"}), say("¿Y la matrícula?"))
+
+    await engine.handle_text(conversation_id, "Soy María López")
+    assert repository.looked_up == []
+    await engine.handle_text(conversation_id, "AUT 48213907")
+
+    # Once, to validate the number: until the plate matches, the declarant is not identified.
+    assert repository.looked_up == ["AUT-48213907"]
+    assert '"policyholder_name": null' in llm.requests[-1]["system"]
+
+
 # --- tools --------------------------------------------------------------------------------
+
+
+async def test_the_llm_sees_its_tool_calls_and_their_results(engine, llm, conversation_id):
+    llm.then(call(UPDATE_CLAIM, IDENTIFICATION), say("Gracias. ¿Cómo se llama?"))
+
+    await engine.handle_text(conversation_id, "AUT 48213907, matrícula 4721 KLM")
+
+    *_, assistant, result = llm.requests[1]["messages"]
+    assert assistant.role is Role.ASSISTANT
+    assert [c.id for c in assistant.tool_calls] == ["call-update_claim"]
+    assert result.role is Role.TOOL
+    assert result.tool_call_id == "call-update_claim"
 
 
 async def test_a_reply_prepared_with_an_accepted_update_is_said_without_asking_the_llm_again(
@@ -94,6 +142,21 @@ async def test_a_prepared_reply_is_not_said_when_a_value_is_rejected(engine, llm
 
     assert texts(result) == ["La matrícula no coincide. ¿Me la repite?"]
     assert len(llm.requests) == 2
+
+
+@pytest.mark.parametrize(
+    "other_call",
+    [call(DECLARANT_REFUSES, {"field": "plate"}), call(UPDATE_CLAIM, "[]")],
+)
+async def test_a_prepared_reply_is_not_said_when_another_call_needs_an_answer(
+    engine, llm, conversation_id, other_call
+):
+    prepared = call(UPDATE_CLAIM, {"declarant_name": "Ana", tools.REPLY_IF_ACCEPTED: "Gracias."})
+    llm.then(calls(prepared, other_call), say("¿Me indica la matrícula?"))
+
+    result = await engine.handle_text(conversation_id, "Soy Ana y la matrícula no se la digo")
+
+    assert texts(result) == ["¿Me indica la matrícula?"]
 
 
 async def test_the_prepared_reply_is_not_a_claim_field(engine, llm, conversation_id):
@@ -403,16 +466,54 @@ async def test_refusing_a_field_that_is_not_missing_is_an_error(engine, llm, con
     assert "error" in tool_results(llm.requests[1])[0]
 
 
-async def test_closed_conversation_does_not_call_the_llm(engine, llm, conversation_id):
+class Clock:
+    def __init__(self) -> None:
+        self.now = NOW
+
+    def __call__(self):
+        return self.now
+
+
+async def test_closed_conversation_does_not_call_the_llm(llm, repository):
+    clock = Clock()
+    engine = ConversationEngine(llm=llm, repository=repository, clock=clock, sleep=no_sleep)
+    conversation_id = (await engine.start()).conversation.id
     llm.then(call(UPDATE_CLAIM, COMPLETE), call(CONFIRM_CLAIM))
     await engine.handle_text(conversation_id, "Todos los datos")
     await engine.handle_text(conversation_id, "Sí")
     calls_before = len(llm.requests)
+    closed = await repository.get(conversation_id)
+    clock.now += timedelta(minutes=5)
 
     result = await engine.handle_text(conversation_id, "¿Hola?")
 
     assert len(llm.requests) == calls_before
     assert "SIN-2026-000001" in texts(result)[0]
+    assert result.previous_status is ClaimStatus.CONFIRMED
+    # Left as it was: a closed conversation has no activity to record.
+    assert await repository.get(conversation_id) == closed
+
+
+async def test_a_turn_marks_the_conversation_active_before_the_llm_replies(repository):
+    clock = Clock()
+    seen = []
+
+    class Observing(ScriptedLLM):
+        async def complete(self, **request):
+            seen.append((await repository.get(conversation_id)).updated_at)
+            return await super().complete(**request)
+
+    llm = Observing().then(say("¿Me indica su póliza?"))
+    engine = ConversationEngine(llm=llm, repository=repository, clock=clock, sleep=no_sleep)
+    conversation_id = (await engine.start()).conversation.id
+    clock.now += timedelta(minutes=5)
+
+    result = await engine.handle_text(conversation_id, "Hola")
+
+    # So that the abandonment sweep leaves it alone while the LLM is thinking.
+    assert seen == [clock.now]
+    assert result.conversation.updated_at == clock.now
+    assert result.previous_status is ClaimStatus.IN_PROGRESS
 
 
 async def test_injuries_get_the_112_advice_before_the_llm_reply(engine, llm, conversation_id):
@@ -420,9 +521,13 @@ async def test_injuries_get_the_112_advice_before_the_llm_reply(engine, llm, con
 
     result = await engine.handle_text(conversation_id, "Mi hija se ha hecho daño")
 
-    assert texts(result) == [templates.emergency_advice().text, "Lo siento mucho. ¿Dónde ocurrió?"]
-    contents = [m.content for m in result.conversation.transcript]
-    assert contents[-2:] == texts(result)
+    advice, reply = texts(result)
+    assert (advice, reply) == (
+        templates.emergency_advice().text,
+        "Lo siento mucho. ¿Dónde ocurrió?",
+    )
+    said = result.conversation.transcript[-2:]
+    assert [(m.content, m.scripted) for m in said] == [(advice, True), (reply, False)]
 
 
 # --- errors -------------------------------------------------------------------------------
@@ -445,6 +550,19 @@ async def test_repeated_unintelligible_utterances_escalate(engine, conversation_
     claim = result.conversation.claim
     assert claim.status is ClaimStatus.ESCALATED
     assert claim.closure_reason is ClosureReason.RETRIES_EXHAUSTED
+
+
+async def test_an_understood_utterance_resets_the_unintelligible_count(
+    engine, llm, conversation_id
+):
+    llm.then(say("¿Me indica su póliza?"))
+    almost = [""] * (MAX_REPEAT_REQUESTS - 1)
+
+    for utterance in [*almost, "Hola", *almost]:
+        result = await engine.handle_text(conversation_id, utterance)
+
+    assert result.conversation.claim.status is ClaimStatus.IN_PROGRESS
+    assert result.conversation.unintelligible_streak == len(almost)
 
 
 async def test_transient_llm_errors_are_retried(engine, llm, conversation_id):
@@ -480,7 +598,7 @@ async def test_claim_updates_survive_an_llm_failure_after_the_tool_ran(
 
 
 async def test_repeated_llm_failures_escalate_as_a_system_error(engine, llm, conversation_id):
-    llm.then(*[LLM_DOWN] * 3 * MAX_LLM_FAILURES)
+    llm.then(*FAILED_TURN * MAX_LLM_FAILURES)
 
     for _ in range(MAX_LLM_FAILURES):
         result = await engine.handle_text(conversation_id, "Hola")
@@ -488,6 +606,17 @@ async def test_repeated_llm_failures_escalate_as_a_system_error(engine, llm, con
     claim = result.conversation.claim
     assert claim.status is ClaimStatus.ESCALATED
     assert claim.closure_reason is ClosureReason.SYSTEM_ERROR
+
+
+async def test_a_usable_llm_reply_resets_the_failure_count(engine, llm, conversation_id):
+    almost = FAILED_TURN * (MAX_LLM_FAILURES - 1)
+    llm.then(*almost, say("¿Me indica su póliza?"), *almost)
+
+    for _ in range(2 * MAX_LLM_FAILURES - 1):
+        result = await engine.handle_text(conversation_id, "Hola")
+
+    assert result.conversation.claim.status is ClaimStatus.IN_PROGRESS
+    assert result.conversation.llm_failure_streak == MAX_LLM_FAILURES - 1
 
 
 async def test_empty_llm_reply_counts_as_a_failure(engine, llm, conversation_id):
@@ -531,6 +660,18 @@ async def test_reply_with_an_invented_reference_scores_zero(
     assert "reference" in comment
 
 
+async def test_an_identifier_only_the_agent_said_is_still_flagged(
+    engine, llm, telemetry, conversation_id
+):
+    invented = "¿Es su póliza la AUT-99998888?"
+    llm.then(say(invented), say(invented))
+
+    await engine.handle_text(conversation_id, "Hola")
+    await engine.handle_text(conversation_id, "No lo sé")
+
+    assert [value for _, value, _ in telemetry.scores] == [0.0, 0.0]
+
+
 # --- models that fill every tool property -------------------------------------------------
 
 
@@ -567,8 +708,12 @@ def test_the_update_tool_has_a_property_for_every_claim_field_and_the_prepared_r
 def test_every_claim_field_can_be_declared_unstated():
     [update] = [t for t in tools.TOOLS if t["function"]["name"] == UPDATE_CLAIM]
     properties = update["function"]["parameters"]["properties"]
-    assert all("null" in schema["type"] for schema in properties.values())
-    assert None in properties["loss_type"]["enum"]
+    for schema in properties.values():
+        [stated, unstated] = schema["type"]
+        assert stated in {"string", "boolean", "object"}
+        assert unstated == "null"
+    assert properties["loss_type"]["enum"] == [*LossType, None]
+    assert properties["loss_location"]["required"] == ["municipality", "province", "country"]
 
 
 def test_stated_values_keep_falsy_answers():

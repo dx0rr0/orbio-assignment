@@ -33,6 +33,7 @@ jobs:
       - run: uv run ruff check --ignore-noqa .
       - run: uv run ruff format --check .
       - run: uv run mypy
+      - run: uv run lint-imports
       # e2e tests need real providers and the running stack; they are excluded by default.
       - run: uv run pytest
 

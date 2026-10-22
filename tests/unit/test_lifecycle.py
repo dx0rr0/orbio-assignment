@@ -19,6 +19,7 @@ from claims_agent.domain import (
     confirm_value,
     policy_number_to_look_up,
 )
+from claims_agent.domain.claim import CONDITIONAL_FIELDS
 
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=MADRID)
 POLICY = Policy(
@@ -71,9 +72,25 @@ def test_invalid_value_is_not_stored_and_its_error_is_recorded():
 
 
 def test_unknown_field_is_rejected_but_not_tracked():
-    result = update(favourite_colour="blue")
+    result = update(favourite_colour="blue", injuries=True)
     assert result.rejected == {"favourite_colour": "unknown field"}
     assert result.claim.failed_attempts == {}
+    assert result.claim.injuries is True
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "valid"),
+    [
+        ("declarant_name", " Al ", True),
+        ("declarant_name", "A", False),
+        ("description", "Me rozaron", True),
+        ("description", "Un choque", False),
+        ("declarant_name", 42, False),
+    ],
+)
+def test_texts_need_a_minimum_length_once_stripped(field, value, valid):
+    result = update(**{field: value})
+    assert (field in result.accepted, field in result.rejected) == (valid, not valid)
 
 
 def test_accepting_a_field_clears_its_previous_error():
@@ -90,8 +107,10 @@ def test_nonexistent_policy_is_rejected():
 
 
 def test_policy_passed_for_a_different_number_does_not_validate_it():
-    result = update(policy=OTHER_POLICY, policy_number="AUT-00000001")
-    assert "policy_number" in result.rejected
+    result = update(policy=OTHER_POLICY, policy_number="AUT-00000001", plate="1234 BCD")
+    assert result.rejected.keys() == {"policy_number"}
+    # Nor is the plate checked against that other policy.
+    assert result.claim.plate == "1234BCD"
 
 
 def test_plate_must_match_the_policy():
@@ -119,13 +138,49 @@ def test_policy_number_to_look_up_prefers_the_proposed_one():
 # --- conditional fields ---------------------------------------------------------------------
 
 
-def test_fields_whose_condition_turns_false_are_dropped():
+@pytest.mark.parametrize(
+    ("change", "dropped"),
+    [
+        ({"driver_is_policyholder": True}, {"driver_name"}),
+        ({"other_vehicle_involved": False}, {"other_vehicle_plate", "friendly_report_signed"}),
+        (
+            {"loss_type": "theft"},
+            {"other_vehicle_involved", "other_vehicle_plate", "friendly_report_signed"},
+        ),
+        ({"loss_type": "collision"}, {"police_report_filed"}),
+        (
+            {"loss_type": "broken_glass", "driver_is_policyholder": True},
+            set(CONDITIONAL_FIELDS),
+        ),
+        (
+            {"other_vehicle_involved": False, "driver_is_policyholder": True},
+            {"driver_name", "other_vehicle_plate", "friendly_report_signed"},
+        ),
+    ],
+)
+def test_fields_whose_condition_turns_false_are_dropped(change, dropped):
+    # All mentioned before the answers that decide whether they apply.
     claim = update(
-        loss_type="collision", other_vehicle_involved=True, other_vehicle_plate="V1234AB"
+        driver_name="Pedro García",
+        other_vehicle_involved=True,
+        other_vehicle_plate="V1234AB",
+        friendly_report_signed=True,
+        police_report_filed=True,
     ).claim
-    claim = update(claim, loss_type="theft").claim
-    assert claim.other_vehicle_involved is None
-    assert claim.other_vehicle_plate is None
+
+    claim = update(claim, **change).claim
+
+    assert {f for f in CONDITIONAL_FIELDS if getattr(claim, f) is None} == dropped
+
+
+def test_the_errors_of_a_field_that_no_longer_applies_are_dropped():
+    claim = update(other_vehicle_plate="?").claim
+    assert "other_vehicle_plate" in claim.field_errors
+
+    claim = update(claim, other_vehicle_involved=False).claim
+
+    assert claim.field_errors == {}
+    assert claim.failed_attempts == {}
 
 
 def test_conditional_field_mentioned_before_its_condition_is_kept():

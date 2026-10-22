@@ -12,14 +12,13 @@ from celery import Task, shared_task
 from channels.layers import get_channel_layer
 from django.utils import timezone
 
-from claims_agent.domain import ClaimStatus, ClosureReason, Conversation, Role, close
-from claims_agent.engine.hallucinations import check_summary
+from claims_agent.domain import ClaimStatus, ClosureReason, Conversation, close
+from claims_agent.engine.hallucinations import report_summary
 from claims_agent.engine.summary import SummaryError, summarize
-from claims_agent.ports import ChatModel, ConcurrentUpdateError, ConversationRepository, Telemetry
-from claims_service.intake.groups import group_name
-from claims_service.intake.models import ConversationRecord
+from claims_agent.ports import ChatModel, ConcurrentUpdateError, Telemetry
+from claims_service.intake.groups import ClaimUpdatedMessage, group_name
 from claims_service.intake.presenters import claim_updated_event
-from claims_service.intake.repository import to_conversation
+from claims_service.intake.repository import DjangoConversationRepository
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +27,6 @@ ABANDONED_AFTER = timedelta(minutes=10)
 # broker was down); after SUMMARY_GIVE_UP_AFTER it is left to a human.
 SUMMARY_GRACE = timedelta(minutes=5)
 SUMMARY_GIVE_UP_AFTER = timedelta(days=1)
-_ACTIVE = (ClaimStatus.IN_PROGRESS.value, ClaimStatus.PENDING_CONFIRMATION.value)
 
 
 @dataclass(frozen=True)
@@ -36,7 +34,8 @@ class TaskServices:
     """What the tasks run with: `services.for_tasks` builds them for each worker process (see
     `claims_service.celery`), the tests build their own."""
 
-    repository: ConversationRepository
+    # The sweeps query it beyond the engine's port.
+    repository: DjangoConversationRepository
     telemetry: Telemetry
     # Called once per summary: a client is bound to the event loop it first ran on, and each
     # task runs in its own (async_to_sync).
@@ -68,10 +67,11 @@ def _configured() -> TaskServices:
 
 def notify_watchers(conversation: Conversation) -> None:
     """Push the new claim state to whoever is watching the conversation."""
-    async_to_sync(get_channel_layer().group_send)(
-        group_name(conversation.id),
-        {"type": "claim_updated", "payload": claim_updated_event(conversation)},
-    )
+    message: ClaimUpdatedMessage = {
+        "type": "claim_updated",
+        "payload": claim_updated_event(conversation),
+    }
+    async_to_sync(get_channel_layer().group_send)(group_name(conversation.id), message)
 
 
 class _SummaryTask(Task):
@@ -122,7 +122,8 @@ def generate_claim_summary(conversation_id: str) -> None:
             return None
         async with services.open_chat_model() as llm:
             summary = await summarize(llm, conversation)
-        _check_summary(summary.key_points, conversation, telemetry)
+        # Like the turns' replies, the LLM-written key points are checked, never blocked.
+        report_summary(summary.key_points, conversation, telemetry)
         return await repository.save(conversation.model_copy(update={"summary": summary}))
 
     try:
@@ -137,33 +138,13 @@ def generate_claim_summary(conversation_id: str) -> None:
         services.notify(conversation)
 
 
-def _check_summary(
-    key_points: tuple[str, ...], conversation: Conversation, telemetry: Telemetry
-) -> None:
-    """Like the turns' replies, the LLM-written key points are checked, never blocked."""
-    declarant_said = " ".join(
-        m.content for m in conversation.messages if m.role is Role.USER and m.content
-    )
-    findings = check_summary(key_points, conversation.claim, declarant_said)
-    telemetry.score(
-        "summary_hallucination_check", 0.0 if findings else 1.0, "; ".join(findings) or None
-    )
-    if findings:
-        logger.warning(
-            "Possible hallucination in the claim summary: %s",
-            "; ".join(findings),
-            extra={"conversation_id": str(conversation.id)},
-        )
-
-
 @shared_task
 def sweep_abandoned_conversations() -> int:
     """Close as incomplete every active conversation idle for ABANDONED_AFTER."""
-    cutoff = timezone.now() - ABANDONED_AFTER
     services = _configured()
+    idle = async_to_sync(services.repository.active_idle_since)(timezone.now() - ABANDONED_AFTER)
     closed = 0
-    for record in ConversationRecord.objects.filter(status__in=_ACTIVE, updated_at__lt=cutoff):
-        conversation = to_conversation(record)
+    for conversation in idle:
         claim = close(conversation.claim, ClaimStatus.INCOMPLETE, ClosureReason.ABANDONED)
         try:
             # A conditional UPDATE on the version: a turn that saved since (it marks the
@@ -185,18 +166,11 @@ def queue_missing_summaries() -> int:
     queues it on confirmation, but does not hold the call up if the broker is down."""
     now = timezone.now()
     services = _configured()
-    lost = ConversationRecord.objects.filter(
-        status=ClaimStatus.CONFIRMED.value,
-        document__summary=None,
-        document__summary_failed=False,
-        # A turn on a confirmed claim saves nothing, so this is when it was confirmed.
-        updated_at__lt=now - SUMMARY_GRACE,
-        updated_at__gte=now - SUMMARY_GIVE_UP_AFTER,
-    ).values_list("id", flat=True)
-    queued = 0
+    lost = async_to_sync(services.repository.confirmed_without_summary)(
+        confirmed_from=now - SUMMARY_GIVE_UP_AFTER, confirmed_before=now - SUMMARY_GRACE
+    )
     for conversation_id in lost:
         services.queue_summary(str(conversation_id))
-        queued += 1
-    if queued:
-        logger.warning("Queued %d lost claim summaries", queued)
-    return queued
+    if lost:
+        logger.warning("Queued %d lost claim summaries", len(lost))
+    return len(lost)

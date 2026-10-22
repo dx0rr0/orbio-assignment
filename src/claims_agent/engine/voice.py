@@ -1,7 +1,8 @@
 """Speech at the edges of a turn. Failures degrade instead of breaking the turn: a failed
 transcription counts as an unintelligible utterance, a failed synthesis as a text-only reply.
-The speech of the fixed messages (the greeting first) is synthesized once per process and
-replayed after that: instant and free."""
+Identifiers in whatever is synthesized are spelled out (`speech_text`). The speech of the fixed
+messages (the greeting first) is synthesized once per process and replayed after that: instant
+and free."""
 
 import asyncio
 import logging
@@ -9,6 +10,7 @@ import re
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import aclosing
 
+from claims_agent.engine.speech_text import spell_identifiers
 from claims_agent.engine.templates import BotMessage, fixed_messages, greeting
 from claims_agent.ports import NullTelemetry, SpeechError, SpeechToText, Telemetry, TextToSpeech
 
@@ -48,14 +50,16 @@ def speech_chunks(text: str) -> list[str]:
     return chunks
 
 
+def _tts_text(replies: Sequence[BotMessage]) -> str:
+    """What the TTS is given for the replies of a turn."""
+    return " ".join(spell_identifiers(reply.spoken) for reply in replies)
+
+
 def _fixed_texts() -> frozenset[str]:
     """What is synthesized for a fixed message said alone: all of it (`Voice.speak`) or each
     of its sentences (`Voice.speak_in_chunks`)."""
-    return frozenset(
-        text
-        for message in fixed_messages()
-        for text in (message.spoken, *speech_chunks(message.spoken))
-    )
+    wholes = [_tts_text([message]) for message in fixed_messages()]
+    return frozenset(text for whole in wholes for text in (whole, *speech_chunks(whole)))
 
 
 class Voice:
@@ -98,7 +102,7 @@ class Voice:
     async def speak(self, replies: Sequence[BotMessage]) -> AsyncGenerator[bytes]:
         """All the replies of a turn spoken in one synthesis, yielded in pieces as it arrives.
         A failed synthesis ends the audio there."""
-        text = " ".join(reply.spoken for reply in replies)
+        text = _tts_text(replies)
         async with aclosing(self._speak_in_order([text] if text else [])) as pieces:
             async for piece in pieces:
                 yield piece
@@ -109,7 +113,7 @@ class Voice:
         yielded as they arrive once those of the sentences before it are out, so the first
         sentence plays while the rest is still being synthesized. A failed synthesis ends the
         audio there (the text of the replies is sent anyway)."""
-        texts = speech_chunks(" ".join(reply.spoken for reply in replies))
+        texts = speech_chunks(_tts_text(replies))
         async with aclosing(self._speak_in_order(texts)) as pieces:
             async for piece in pieces:
                 yield piece

@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from django.db import connection
@@ -61,6 +61,18 @@ async def test_missing_conversation(repository):
         await repository.get(missing.id)
     with pytest.raises(ConversationNotFoundError):
         await repository.save(missing)
+
+
+async def test_the_most_recently_saved_are_listed_first(repository):
+    now = timezone.now()
+    _, newer, newest = [
+        await repository.create(Conversation.start(now - timedelta(minutes=minutes)))
+        for minutes in (2, 1, 0)
+    ]
+
+    recent = await repository.list_recent(status=None, limit=2)
+
+    assert [conversation.id for conversation in recent] == [newest.id, newer.id]
 
 
 async def test_policy_lookup(repository, policies):

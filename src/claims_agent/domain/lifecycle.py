@@ -7,7 +7,6 @@ is valid, when the claim is complete, and when it closes (ADR-0002).
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
 from claims_agent.domain.claim import (
     CLAIM_FIELDS,
@@ -59,7 +58,7 @@ def _loss_type(raw: object) -> LossType:
     raise FieldError(f"must be one of: {', '.join(LossType)}")
 
 
-_PARSERS: dict[str, Callable[[object], Any]] = {
+_PARSERS: dict[str, Callable[[object], object]] = {
     "policy_number": normalize_policy_number,
     "plate": normalize_plate,
     "declarant_name": _text(2),
@@ -77,13 +76,13 @@ _PARSERS: dict[str, Callable[[object], Any]] = {
 }
 
 
-def _parse(name: str, raw: object, now: datetime) -> Any:
+def _parse(name: str, raw: object, now: datetime) -> object:
     if name == "loss_window":
         return parse_loss_window(raw, now)
     return _PARSERS[name](raw)
 
 
-def policy_number_to_look_up(claim: Claim, proposed: Mapping[str, Any]) -> str | None:
+def policy_number_to_look_up(claim: Claim, proposed: Mapping[str, object]) -> str | None:
     """The policy number `apply_update` will need the policy for, so the caller can fetch it."""
     if "policy_number" in proposed:
         try:
@@ -110,7 +109,7 @@ def _inapplicable_fields(claim: Claim) -> set[str]:
 
 def apply_update(
     claim: Claim,
-    proposed: Mapping[str, Any],
+    proposed: Mapping[str, object],
     *,
     policy: Policy | None,
     now: datetime,
@@ -126,7 +125,7 @@ def apply_update(
     if claim.status.is_final:
         raise ClaimClosedError(f"claim is {claim.status}")
 
-    values: dict[str, Any] = {}
+    values: dict[str, object] = {}
     errors: dict[str, str] = {}
     for name, raw in proposed.items():
         if name not in CLAIM_FIELDS:

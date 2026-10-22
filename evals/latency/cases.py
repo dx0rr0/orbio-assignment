@@ -8,7 +8,8 @@ Dates in the checks are relative to the moment the case runs, as the declarant's
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
-from typing import Any
+
+from pydantic import JsonValue
 
 from claims_agent.domain import MADRID, Claim, ClaimStatus, LossType
 from claims_agent.engine import templates
@@ -24,7 +25,7 @@ class Case:
     audio: str
     tags: tuple[str, ...]
     # Field values collected before the turn, in the form the update_claim tool takes them.
-    known: Mapping[str, Any]
+    known: Mapping[str, JsonValue]
     # What the agent said last, before the declarant's turn (None: built from `known`, for the
     # read-back of a complete claim).
     asked: str | None
@@ -36,7 +37,7 @@ class Case:
 # --- check helpers ----------------------------------------------------------------------------
 
 
-def equals(name: str, expected: Any) -> Check:
+def equals(name: str, expected: object) -> Check:
     return lambda claim, replies, now: getattr(claim, name) == expected
 
 
@@ -121,7 +122,7 @@ def unchanged(*names: str) -> Check:
 
 # --- states the cases start from --------------------------------------------------------------
 
-MARIA = {
+MARIA: dict[str, JsonValue] = {
     "policy_number": "AUT-48213907",
     "plate": "4721KLM",
     "declarant_name": "María López Fernández",
@@ -142,7 +143,7 @@ MARIA_COMPLETE = MARIA_GLASS | {
     "injuries": False,
     "vehicle_immobilized": False,
 }
-CARLOS_THEFT = {
+CARLOS_THEFT: dict[str, JsonValue] = {
     "policy_number": "AUT-73058416",
     "plate": "6614LPR",
     "declarant_name": "Carlos Moreno Díaz",
@@ -398,7 +399,7 @@ if not {case.id for case in CASES} >= TEST_IDS:
     raise ValueError(f"unknown test cases: {TEST_IDS - {case.id for case in CASES}}")
 
 
-def resolve(known: Mapping[str, Any], now: datetime) -> dict[str, Any]:
+def resolve(known: Mapping[str, JsonValue], now: datetime) -> dict[str, JsonValue]:
     """`known` with its relative placeholders turned into dates for `now`."""
     yesterday_19 = datetime.combine(
         now.astimezone(MADRID).date() - timedelta(days=1), time(19, 0), MADRID

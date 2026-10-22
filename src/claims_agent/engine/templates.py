@@ -1,11 +1,9 @@
 """Messages written by code, never by the LLM: anything the declarant could act on or rely on
 (the read-back, the reference, coverage decisions, the 112 advice) comes from here.
 
-Each message has a display text and a speech text. Identifiers in any spoken text, the LLM's
-replies too, are spelled out for the TTS so that "AUT-48213907" is not read as a large number.
+Each message has a display text and, when they differ, a speech text.
 """
 
-import re
 from dataclasses import dataclass
 from datetime import date, datetime, time
 
@@ -66,33 +64,11 @@ class BotMessage:
 
     @property
     def spoken(self) -> str:
-        return spell_identifiers(self.speech or self.text)
+        """What is said aloud. `Voice` spells its identifiers out for the TTS."""
+        return self.speech or self.text
 
 
 # --- formatting ---------------------------------------------------------------------------
-
-# Identifiers as they appear in a text: references, policy numbers and current Spanish plates.
-_REFERENCE = re.compile(r"\bSIN-(\d{4})-(\d{6})\b")
-_POLICY_NUMBER = re.compile(r"\bAUT[-\s]?(\d{8})\b")
-_PLATE = re.compile(r"\b(\d{4})\s?([BCDFGHJKLMNPRSTVWXYZ]{3})\b")
-
-
-def _spell(identifier: str) -> str:
-    """Letters one by one and digits in pairs, each apart: 'KLM4721' → 'K, L, M, 47, 21'. A
-    pair is a number the TTS reads right in any language; four digits it reads as thousands."""
-    pieces: list[str] = []
-    for run in re.findall(r"[A-Z]+|\d+", identifier):
-        pieces += [run[i : i + 2] for i in range(0, len(run), 2)] if run.isdigit() else list(run)
-    return ", ".join(pieces)
-
-
-def spell_identifiers(text: str) -> str:
-    """`text` with its identifiers spelled out for the TTS: 'AUT-48213907' → 'A, U, T, 48, 21,
-    39, 07', '4721 KLM' → '47, 21, K, L, M', 'SIN-2026-000123' → 'S, I, N, 2026, 00, 01, 23'
-    (the year whole, as a person says it)."""
-    text = _REFERENCE.sub(lambda m: f"S, I, N, {m[1]}, {_spell(m[2])}", text)
-    text = _POLICY_NUMBER.sub(lambda m: f"A, U, T, {_spell(m[1])}", text)
-    return _PLATE.sub(lambda m: _spell(m[1] + m[2]), text)
 
 
 def display_plate(plate: str) -> str:
@@ -100,6 +76,15 @@ def display_plate(plate: str) -> str:
     if len(plate) == 7 and plate[:4].isdigit() and plate[4:].isalpha():
         return f"{plate[:4]} {plate[4:]}"
     return plate
+
+
+def _place(location: LossLocation) -> str:
+    """'A-3, Arganda del Rey (Madrid)': the province only when it is not the municipality's
+    name, so not 'Valencia (Valencia)'."""
+    place = ", ".join(p for p in (location.way, location.municipality) if p)
+    if location.province != location.municipality:
+        place = f"{place} ({location.province})"
+    return place
 
 
 def _date(value: date) -> str:
@@ -176,17 +161,13 @@ def read_back(incomplete: Claim) -> BotMessage:
     were checked against the policy; names and the description because they are the
     declarant's own words. All of it is on screen."""
     claim = incomplete.complete()
-    location = claim.loss_location
-    place = ", ".join(p for p in (location.way, location.municipality) if p)
-    if location.province != location.municipality:
-        place = f"{place} ({location.province})"
     injuries = "Hubo heridos" if claim.injuries else "No hubo heridos"
     vehicle = "quedó inmovilizado" if claim.vehicle_immobilized else "puede circular"
 
     sentences = [
         (
             f"Resumo su declaración: {_LOSS_TYPE_SUMMARY[claim.loss_type]}, "
-            f"{format_loss_window(claim.loss_window)}, en {place}."
+            f"{format_loss_window(claim.loss_window)}, en {_place(claim.loss_location)}."
         ),
         # A stolen vehicle is neither drivable nor immobilized.
         f"{injuries}."
@@ -218,8 +199,6 @@ def _listed(intro: str, lines: list[str], outro: str) -> BotMessage:
 
 def _field_lines(claim: CompleteClaim) -> list[tuple[tuple[str, ...], str]]:
     """One (fields, line) per value the declarant could correct, in the claim order."""
-    location = claim.loss_location
-    place = ", ".join(p for p in (location.way, location.municipality) if p)
     driver = "el titular de la póliza" if claim.driver_is_policyholder else claim.driver_name
     lines: list[tuple[tuple[str, ...], str]] = [
         (("policy_number",), f"Póliza: {claim.policy_number}."),
@@ -228,7 +207,7 @@ def _field_lines(claim: CompleteClaim) -> list[tuple[tuple[str, ...], str]]:
         (("driver_is_policyholder", "driver_name"), f"Conductor: {driver}."),
         (("loss_type",), f"Tipo de siniestro: {LOSS_TYPE_NAMES[claim.loss_type]}."),
         (("loss_window",), f"Fecha y hora: {format_loss_window(claim.loss_window)}."),
-        (("loss_location",), f"Lugar: {place} ({location.province})."),
+        (("loss_location",), f"Lugar: {_place(claim.loss_location)}."),
         (("description",), f"Descripción: {_sentence(claim.description)}"),
         (("injuries",), f"Heridos: {_yes_no(value=claim.injuries)}."),
         (
@@ -360,10 +339,7 @@ def closed(claim: Claim, policy: Policy | None) -> BotMessage:
                 "Guardamos lo que nos ha indicado; puede contactar de nuevo cuando quiera."
             )
         case _:
-            return BotMessage(
-                "Esta conversación ya está cerrada. Si necesita declarar un siniestro, "
-                "inicie una nueva conversación."
-            )
+            return _conversation_closed()
 
 
 def already_closed(claim: Claim) -> BotMessage:
@@ -372,6 +348,10 @@ def already_closed(claim: Claim) -> BotMessage:
             f"Esta declaración ya está registrada con la referencia {claim.reference}. "
             "Si necesita declarar otro siniestro, inicie una nueva conversación."
         )
+    return _conversation_closed()
+
+
+def _conversation_closed() -> BotMessage:
     return BotMessage(
         "Esta conversación ya está cerrada. Si necesita declarar un siniestro, "
         "inicie una nueva conversación."

@@ -12,8 +12,9 @@ import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
 from uuid import UUID
+
+from pydantic import JsonValue
 
 from claims_agent.domain import (
     MADRID,
@@ -34,9 +35,10 @@ from claims_agent.domain import (
     policy_number_to_look_up,
 )
 from claims_agent.engine import templates, tools
-from claims_agent.engine.hallucinations import check_reply
+from claims_agent.engine.hallucinations import report_reply
 from claims_agent.engine.prompts import system_prompt
 from claims_agent.engine.templates import BotMessage
+from claims_agent.engine.tools import ToolResult
 from claims_agent.ports import (
     ChatModel,
     Completion,
@@ -119,12 +121,12 @@ def _needs_script(before: Claim, after: Claim) -> bool:
     )
 
 
-def _prepared_reply(calls: Sequence[ToolCall], results: Sequence[Mapping[str, Any]]) -> str | None:
+def _prepared_reply(calls: Sequence[ToolCall], results: Sequence[ToolResult]) -> str | None:
     """The reply the LLM prepared with its updates, if every call was an update that was fully
     accepted. Any rejection or other tool needs the LLM to see the result before replying."""
     prepared = None
     for call, result in zip(calls, results, strict=True):
-        if call.name != tools.UPDATE_CLAIM or "error" in result or result.get("rejected"):
+        if call.name != tools.UPDATE_CLAIM or result.error is not None or result.rejected:
             return None
         try:
             arguments = json.loads(call.arguments or "{}")
@@ -244,7 +246,7 @@ class ConversationEngine:
             if after.status is ClaimStatus.PENDING_CONFIRMATION:
                 conversation = conversation.model_copy(update={"read_back_claim": after})
         elif llm_reply is not None:
-            self._check_hallucinations(llm_reply, conversation)
+            report_reply(llm_reply, conversation, self._telemetry)
             replies.append(BotMessage(llm_reply, scripted=False))
         else:
             replies.append(templates.technical_problem())
@@ -292,12 +294,12 @@ class ConversationEngine:
             conversation = conversation.add(
                 Message(role=Role.ASSISTANT, tool_calls=completion.tool_calls)
             )
-            results: list[Mapping[str, Any]] = []
+            results: list[ToolResult] = []
             for call in completion.tool_calls:
                 if _needs_script(before, conversation.claim):
                     # The declarant must hear the template before anything else happens to
                     # the claim (e.g. a confirmation of data they never heard read back).
-                    result: Mapping[str, Any] = {"error": "not run: the claim changed first"}
+                    result = ToolResult(error="not run: the claim changed first")
                 else:
                     conversation, result = await self._run_tool(conversation, call, turn)
                 results.append(result)
@@ -305,7 +307,7 @@ class ConversationEngine:
                     Message(
                         role=Role.TOOL,
                         tool_call_id=call.id,
-                        content=json.dumps(result, ensure_ascii=False),
+                        content=json.dumps(result.as_json(), ensure_ascii=False),
                     )
                 )
             turn.progress = conversation
@@ -339,16 +341,16 @@ class ConversationEngine:
 
     async def _run_tool(
         self, conversation: Conversation, call: ToolCall, turn: _Turn
-    ) -> tuple[Conversation, Mapping[str, Any]]:
+    ) -> tuple[Conversation, ToolResult]:
         if conversation.claim.status.is_final:
-            return conversation, {"error": "the claim is already closed"}
+            return conversation, ToolResult(error="the claim is already closed")
         try:
             arguments = json.loads(call.arguments or "{}")
         except json.JSONDecodeError:
             arguments = None
         if not isinstance(arguments, dict):
             logger.warning("Invalid arguments for tool %s: %r", call.name, call.arguments)
-            return conversation, {"error": "arguments must be a JSON object"}
+            return conversation, ToolResult(error="arguments must be a JSON object")
 
         match call.name:
             case tools.UPDATE_CLAIM:
@@ -361,11 +363,11 @@ class ConversationEngine:
                 return self._declarant_refuses(conversation, arguments, turn)
             case _:
                 logger.warning("LLM called unknown tool %s", call.name)
-                return conversation, {"error": f"unknown tool {call.name}"}
+                return conversation, ToolResult(error=f"unknown tool {call.name}")
 
     async def _update_claim(
-        self, conversation: Conversation, proposed: Mapping[str, Any], turn: _Turn
-    ) -> tuple[Conversation, Mapping[str, Any]]:
+        self, conversation: Conversation, proposed: Mapping[str, JsonValue], turn: _Turn
+    ) -> tuple[Conversation, ToolResult]:
         claim = conversation.claim
         proposed = tools.stated_values(
             {name: value for name, value in proposed.items() if name != tools.REPLY_IF_ACCEPTED}
@@ -377,50 +379,51 @@ class ConversationEngine:
                 claim, proposed, policy=policy, now=turn.now, already_failed=turn.failed_fields
             )
             turn.failed_fields |= result.rejected.keys()
-            outcome = {
-                "accepted": list(result.accepted),
-                "rejected": dict(result.rejected),
-                "status": result.claim.status.value,
-                "missing_fields": list(result.claim.missing_fields),
-            }
-            span.update(output=outcome)
+            outcome = ToolResult(
+                accepted=result.accepted,
+                rejected=dict(result.rejected),
+                status=result.claim.status,
+                missing_fields=result.claim.missing_fields,
+            )
+            span.update(output=outcome.as_json())
         return conversation.model_copy(update={"claim": result.claim}), outcome
 
     async def _confirm_claim(
         self, conversation: Conversation, now: datetime
-    ) -> tuple[Conversation, Mapping[str, Any]]:
+    ) -> tuple[Conversation, ToolResult]:
         claim = conversation.claim
         if claim.status is not ClaimStatus.PENDING_CONFIRMATION:
-            return conversation, {
-                "error": "the claim is not complete yet",
-                "missing_fields": list(claim.missing_fields),
-            }
+            return conversation, ToolResult(
+                error="the claim is not complete yet", missing_fields=claim.missing_fields
+            )
         if conversation.read_back_fingerprint != claim.data_fingerprint:
-            return conversation, {"error": "the declarant has not heard the current data yet"}
+            return conversation, ToolResult(
+                error="the declarant has not heard the current data yet"
+            )
         year = now.astimezone(MADRID).year
         sequence = await self._repository.next_reference_sequence(year)
         claim = confirm(claim, format_reference(year, sequence))
-        return conversation.model_copy(update={"claim": claim}), {"status": claim.status.value}
+        return conversation.model_copy(update={"claim": claim}), ToolResult(status=claim.status)
 
-    def _confirm_value(self, conversation: Conversation) -> tuple[Conversation, Mapping[str, Any]]:
+    def _confirm_value(self, conversation: Conversation) -> tuple[Conversation, ToolResult]:
         claim = conversation.claim
         if claim.coverage_issue is None:
-            return conversation, {"error": "no value is waiting for confirmation"}
+            return conversation, ToolResult(error="no value is waiting for confirmation")
         if conversation.read_back_fingerprint != claim.fingerprint_to_confirm:
-            return conversation, {"error": "the declarant has not been asked about it yet"}
+            return conversation, ToolResult(error="the declarant has not been asked about it yet")
         claim = confirm_value(claim)
-        return conversation.model_copy(update={"claim": claim}), {"status": claim.status.value}
+        return conversation.model_copy(update={"claim": claim}), ToolResult(status=claim.status)
 
     def _declarant_refuses(
-        self, conversation: Conversation, arguments: Mapping[str, Any], turn: _Turn
-    ) -> tuple[Conversation, Mapping[str, Any]]:
+        self, conversation: Conversation, arguments: Mapping[str, JsonValue], turn: _Turn
+    ) -> tuple[Conversation, ToolResult]:
         name = arguments.get("field")
-        if name not in conversation.claim.missing_fields:
-            return conversation, {"error": f"{name} is not a missing required field"}
-        explain = {
-            "instruction": "Explain briefly why this field is needed to process the claim "
+        if not isinstance(name, str) or name not in conversation.claim.missing_fields:
+            return conversation, ToolResult(error=f"{name} is not a missing required field")
+        explain = ToolResult(
+            instruction="Explain briefly why this field is needed to process the claim "
             "and ask for it once more."
-        }
+        )
         if name in turn.refused_fields:
             return conversation, explain
         turn.refused_fields.add(name)
@@ -429,20 +432,7 @@ class ConversationEngine:
         if refusals[name] < MAX_REFUSALS:
             return conversation, explain
         claim = close(conversation.claim, ClaimStatus.INCOMPLETE, ClosureReason.DATA_REFUSED)
-        return conversation.model_copy(update={"claim": claim}), {"status": claim.status.value}
-
-    # --- observability --------------------------------------------------------------------
-
-    def _check_hallucinations(self, reply: str, conversation: Conversation) -> None:
-        declarant_said = " ".join(
-            m.content for m in conversation.messages if m.role is Role.USER and m.content
-        )
-        findings = check_reply(reply, conversation.claim, declarant_said)
-        self._telemetry.score(
-            "hallucination_check", 0.0 if findings else 1.0, "; ".join(findings) or None
-        )
-        if findings:
-            logger.warning("Possible hallucination in LLM reply: %s", "; ".join(findings))
+        return conversation.model_copy(update={"claim": claim}), ToolResult(status=claim.status)
 
 
 def _say(

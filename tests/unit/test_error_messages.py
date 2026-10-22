@@ -5,7 +5,7 @@ import pytest
 
 from claims_agent.domain import Claim, apply_update
 from claims_service.intake.error_messages import UNTRANSLATED, display_error
-from tests.engine.fakes import HAPPY_POLICY, NOW
+from tests.support import HAPPY_POLICY, NOW
 
 SPAIN = {"municipality": "Valencia", "province": "Valencia", "country": "España"}
 

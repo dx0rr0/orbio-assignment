@@ -1,41 +1,21 @@
+"""Fakes of the ports the engine drives, and helpers to script the LLM."""
+
 import json
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import datetime
-from typing import Any
+from typing import TypedDict
 
-from claims_agent.domain import MADRID, Message, ToolCall
+from pydantic import JsonValue
+
+from claims_agent.domain import Message, ToolCall
 from claims_agent.ports import Completion, LLMError, NullTelemetry, Span, ToolSpec
-from claims_agent.seed import seed_policies
-
-NOW = datetime(2026, 10, 20, 12, 0, tzinfo=MADRID)
-HAPPY_POLICY, OTHER_DRIVER_POLICY, EXPIRED_POLICY, NEW_POLICY, _ = seed_policies(NOW.date())
-
-
-# Scripted update_claim payloads for the happy-path policy.
-IDENTIFICATION = {"policy_number": "AUT-48213907", "plate": "4721 KLM"}
-COMPLETE = IDENTIFICATION | {
-    "declarant_name": "María López Fernández",
-    "driver_is_policyholder": True,
-    "loss_type": "broken_glass",
-    "loss_window": {"start": "2026-10-19T19:00", "end": "2026-10-19T19:00"},
-    "loss_location": {
-        "way": "A-3",
-        "municipality": "Arganda del Rey",
-        "province": "Madrid",
-        "country": "España",
-    },
-    "description": "Una piedra que saltó de un camión rompió el parabrisas",
-    "injuries": False,
-    "vehicle_immobilized": False,
-}
 
 
 def say(text: str) -> Completion:
     return Completion(content=text)
 
 
-def call(name: str, arguments: Mapping[str, Any] | str = "{}", *, text: str | None = None):
+def call(name: str, arguments: Mapping[str, JsonValue] | str = "{}", *, text: str | None = None):
     """A completion with one tool call; `arguments` as a mapping or as raw (maybe bad) JSON."""
     raw = arguments if isinstance(arguments, str) else json.dumps(arguments)
     tool_call = ToolCall(id=f"call-{name}", name=name, arguments=raw)
@@ -51,12 +31,18 @@ def calls(*completions: Completion) -> Completion:
     return Completion(content=None, tool_calls=tool_calls)
 
 
+class LLMRequest(TypedDict):
+    system: str
+    messages: list[Message]
+    tools: Sequence[ToolSpec]
+
+
 class ScriptedLLM:
     """Returns the scripted completions (or raises the scripted errors) in order."""
 
     def __init__(self) -> None:
         self.script: list[Completion | Exception] = []
-        self.requests: list[dict[str, Any]] = []
+        self.requests: list[LLMRequest] = []
 
     def then(self, *steps: Completion | Exception) -> "ScriptedLLM":
         self.script.extend(steps)
@@ -77,10 +63,10 @@ class ScriptedLLM:
 class RecordingTelemetry(NullTelemetry):
     def __init__(self) -> None:
         self.scores: list[tuple[str, float, str | None]] = []
-        self.spans: list[tuple[str, Any]] = []
+        self.spans: list[tuple[str, JsonValue]] = []
 
     @contextmanager
-    def span(self, name: str, *, input: Any = None) -> Iterator[Span]:
+    def span(self, name: str, *, input: JsonValue = None) -> Iterator[Span]:
         self.spans.append((name, input))
         with super().span(name, input=input) as span:
             yield span

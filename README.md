@@ -2,7 +2,7 @@
 
 A voice agent that takes the first notice of loss for a fictional car insurer (*Seguros Brisa*). The declarant talks to it in Spanish; it collects the claim, validates every field against the insured policy, reads the claim back for confirmation and issues a reference (`SIN-2026-000123`). A background task then writes a summary for the adjuster.
 
-The vocabulary (loss, claim, declarant, loss window…) is defined in [GLOSSARY.md](GLOSSARY.md), the agreed scope in [docs/PLAN.md](docs/PLAN.md) and the architectural decisions in [docs/adr](docs/adr).
+The vocabulary (loss, claim, declarant, loss window…) is defined in [GLOSSARY.md](GLOSSARY.md), the original plan in [docs/PLAN.md](docs/PLAN.md), the architectural decisions in [docs/adr](docs/adr), and known bugs and parked work in [docs/BUGS.md](docs/BUGS.md) and [docs/BACKLOG.md](docs/BACKLOG.md).
 
 ## Demo
 
@@ -52,7 +52,7 @@ browser ──Ogg Opus────▶ WebSocket consumer ──▶ STT ──▶
 
 **Stateless servers.** A turn loads the conversation, processes it and saves it with an optimistic version check, so any process can serve any turn. A turn marks the conversation as active (a versioned save) before it calls the LLM, so the abandonment sweep, which closes with the same conditional update, skips a conversation that is receiving a turn; if the sweep closed it first, the turn tells the declarant the conversation is closed. Claim references come from an atomic Postgres upsert.
 
-**Failure handling.** An empty or unintelligible transcription is answered without calling the LLM. LLM errors are retried with backoff; if they persist, the agent apologises and keeps the conversation, and three failed turns in a row escalate it. Invalid tool calls go back to the LLM as errors. A failed transcription counts as unintelligible, and a failed synthesis falls back to a text-only reply.
+**Failure handling.** An empty or unintelligible transcription is answered without calling the LLM. LLM errors are retried with backoff; if they persist, the agent apologises and keeps the conversation, and three failed turns in a row escalate it. Three unintelligible utterances in a row escalate it too. Invalid tool calls go back to the LLM as errors. A failed transcription counts as unintelligible, and a failed synthesis ends the audio there: the text of every reply is always sent.
 
 ## Testing
 
@@ -61,7 +61,8 @@ uv sync
 docker compose up -d db                       # the service tests use Postgres
 uv run --env-file .env pytest                 # unit, engine and service tests
 uv run pytest tests/unit tests/engine         # no .env or database needed
-uv run mypy                                   # type checks (src, evals, scripts)
+uv run mypy                                   # strict type checks (src, evals, scripts), no explicit Any
+uv run lint-imports                           # the hexagonal layers: imports only point inwards
 uv run --env-file .env pytest -m e2e          # needs the whole stack up and real providers
 uv run --env-file .env python -m evals.run    # LLM-simulated declarants
 uv run --env-file .env python scripts/chat.py # talk to the engine in text, real LLM, no database
@@ -70,14 +71,14 @@ cd frontend && npm ci && npm test && npm run lint
 
 | Layer | What it checks |
 |---|---|
-| `tests/unit` | Domain rules, templates, hallucination regexes, next steps, JSON logs. No LLM. |
-| `tests/engine` | The turn loop with a scripted fake LLM: tool handling, templates, retries, failures, escalations. |
-| `tests/service` | Postgres repository (versioning, concurrent reference numbers), WebSocket protocol, API, Celery tasks. |
+| `tests/unit` | Domain rules, templates, hallucination regexes, next steps, JSON logs, the OpenRouter adapters against a mocked HTTP transport. No LLM. |
+| `tests/engine` | The turn loop with a scripted fake LLM: tool handling, templates, retries, failures, escalations. Speech by sentence and the fixed-message speech cache, with fake STT and TTS; the claim summary. |
+| `tests/service` | Postgres repository (versioning, concurrent reference numbers), WebSocket protocol, API, Celery tasks, server startup and shutdown. |
 | `tests/e2e` | Recorded Spanish utterances (`tests/e2e/fixtures/audio`) through nginx, STT, LLM and TTS. The final claim is checked. |
-| `evals/` | Six scenarios where an LLM plays the declarant (happy path, another driver with injuries, expired policy, loss before the policy started, insisting on a wrong plate, refusing to give a name). |
-| `frontend` | WAV encoding and Ogg Opus muxing, conversation state, claim stages and value formatting (vitest). |
+| `evals/` | Seven scenarios where an LLM plays the declarant (happy path, another driver with injuries, a place corrected during the read-back, expired policy, loss before the policy started, insisting on a wrong plate, refusing to give a name). `evals/latency/` measures time to first audio ([docs/LATENCY.md](docs/LATENCY.md)). |
+| `frontend` | WAV encoding and Ogg Opus muxing, PCM speech decoding and playback, the WebSocket protocol, access tokens, conversation state, claim stages and value formatting (vitest). |
 
-GitHub Actions runs lint and the non-e2e tests for both the backend (with a Postgres service) and the frontend.
+GitHub Actions runs, for the backend (with a Postgres service), the suppression check, ruff, mypy, the import contracts and the non-e2e tests; for the frontend, lint, tests and the build.
 
 Some bugs only showed up with real models, and each now has a regression test:
 - The LLM filled every tool property with invented or empty values (`injuries: false`, `""`). Fields are now nullable and blank proposals are dropped before validation.
@@ -93,12 +94,12 @@ Logs are one JSON object per line from Django, uvicorn and Celery. With the Lang
 All three go through OpenRouter, each behind a port:
 
 - LLM: `google/gemini-3.1-flash-lite`, chat completions with tools, no reasoning (the fastest of the models measured for a turn, with the same extraction).
-- STT: `microsoft/mai-transcribe-2`. In the spike it transcribed all nine recorded utterances correctly, including policy numbers and plates. The one miss was a run of zeros ("AUT-00000001" lost a digit), so the seeded policy numbers avoid them.
-- TTS: `microsoft/mai-voice-2.1-flash` with the `es-ES-Marta` voice (Spain accent), about 1.5 s faster to the whole reply than `google/gemini-3.8-flash-lite-tts`. It is asked for raw 24 kHz PCM, which the adapter wraps as WAV.
+- STT: `microsoft/mai-transcribe-2`. In an early test of the models it transcribed all nine recorded utterances correctly, including policy numbers and plates. The one miss was a run of zeros ("AUT-00000001" lost a digit), so the seeded policy numbers avoid them.
+- TTS: `microsoft/mai-voice-2.1-flash` with the `es-ES-Marta` voice (Spain accent), about 1.5 s faster to the whole reply than `google/gemini-3.8-flash-lite-tts`. It is asked for raw 24 kHz PCM, which goes to the browser as it arrives: each sentence of a reply is synthesized at the same time and played in order, so the first plays while the rest is still being synthesized. The speech of the fixed messages (the greeting first, synthesized when the server starts) is kept and replayed.
 
 ## Potential improvements
 
-- Real-time voice with streaming and barge-in. Turns are push-to-talk today.
+- Real-time voice: streaming the declarant's speech, a streamed LLM reply and barge-in. Turns are push-to-talk today, and only the reply's speech is streamed.
 - Replicas behind a load balancer; rate limits and quotas per provider; model fallback.
 - More languages; other insurance lines (home).
 - Real identity verification and authentication (staff access to the conversation list, declarants resuming from another device); resuming a conversation after it closes; geocoding the loss location.

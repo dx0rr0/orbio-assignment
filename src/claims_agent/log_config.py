@@ -3,7 +3,6 @@
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Any
 
 # Attributes every LogRecord has; anything else was passed through `extra=` and is logged too.
 # uvicorn's color_message duplicates the message with terminal escapes.
@@ -16,7 +15,7 @@ _STANDARD_ATTRIBUTES = set(vars(logging.makeLogRecord({}))) | {
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        entry: dict[str, Any] = {
+        entry: dict[str, object] = {
             "time": datetime.fromtimestamp(record.created, UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
@@ -28,7 +27,7 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(entry, ensure_ascii=False, default=str)
 
 
-def json_logging_config(level: str) -> dict[str, Any]:
+def json_logging_config(level: str) -> dict[str, object]:
     """A `logging.config.dictConfig` configuration."""
     return {
         "version": 1,

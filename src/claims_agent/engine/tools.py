@@ -1,9 +1,10 @@
 """The tools the LLM may call. They only propose: the engine validates and decides."""
 
 from collections.abc import Mapping
-from typing import Any
 
-from claims_agent.domain import CLAIM_FIELDS, LossType
+from pydantic import BaseModel, ConfigDict, JsonValue
+
+from claims_agent.domain import CLAIM_FIELDS, ClaimStatus, LossType
 from claims_agent.ports import ToolSpec
 
 UPDATE_CLAIM = "update_claim"
@@ -14,15 +15,15 @@ DECLARANT_REFUSES = "declarant_refuses_field"
 # accepted, which saves asking the LLM again once the tool has run.
 REPLY_IF_ACCEPTED = "reply_if_accepted"
 
-_BOOL = {"type": "boolean"}
-_TEXT = {"type": "string"}
-_DATETIME = {
+_BOOL: dict[str, JsonValue] = {"type": "boolean"}
+_TEXT: dict[str, JsonValue] = {"type": "string"}
+_DATETIME: dict[str, JsonValue] = {
     "type": "string",
     "description": "ISO 8601 local datetime in Europe/Madrid, e.g. 2026-10-19T19:00",
 }
 
 # JSON Schema of each claim field.
-_CLAIM_PROPERTIES: dict[str, dict[str, Any]] = {
+_CLAIM_PROPERTIES: dict[str, dict[str, JsonValue]] = {
     "policy_number": {**_TEXT, "description": "As said by the declarant, e.g. AUT-48213907"},
     "plate": {**_TEXT, "description": "Plate of the insured vehicle, e.g. 4721 KLM"},
     "declarant_name": {**_TEXT, "description": "Full name of the person talking to you"},
@@ -76,25 +77,41 @@ _CLAIM_PROPERTIES: dict[str, dict[str, Any]] = {
 }
 
 
-def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
+def _nullable(schema: dict[str, JsonValue]) -> dict[str, JsonValue]:
     """Some models fill every property of a tool; null gives them a way to say "not stated"
     instead of inventing a value."""
     nullable = {**schema, "type": [schema["type"], "null"]}
-    if "enum" in schema:
-        nullable["enum"] = [*schema["enum"], None]
+    if isinstance(enum := schema.get("enum"), list):
+        nullable["enum"] = [*enum, None]
     return nullable
 
 
-def stated_values(proposed: Mapping[str, Any]) -> dict[str, Any]:
+def stated_values(proposed: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     """The proposed values that carry something: null, blank text and objects with only blank
     members mean the declarant did not say it, not that they said something invalid."""
 
-    def blank(value: Any) -> bool:
+    def blank(value: JsonValue) -> bool:
         if value is None or (isinstance(value, str) and not value.strip()):
             return True
         return isinstance(value, dict) and all(blank(v) for v in value.values())
 
     return {name: value for name, value in proposed.items() if not blank(value)}
+
+
+class ToolResult(BaseModel):
+    """What a tool call tells the LLM. Only the members that are set are sent."""
+
+    model_config = ConfigDict(frozen=True)
+
+    error: str | None = None
+    instruction: str | None = None
+    accepted: tuple[str, ...] | None = None
+    rejected: dict[str, str] | None = None
+    status: ClaimStatus | None = None
+    missing_fields: tuple[str, ...] | None = None
+
+    def as_json(self) -> dict[str, JsonValue]:
+        return self.model_dump(mode="json", exclude_none=True)
 
 
 TOOLS: tuple[ToolSpec, ...] = (

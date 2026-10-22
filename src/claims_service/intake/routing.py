@@ -2,8 +2,8 @@
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Any
 
+from asgiref.typing import ASGIReceiveCallable, ASGISendCallable, LifespanScope
 from channels.routing import URLRouter
 from channels.security.websocket import AllowedHostsOriginValidator, OriginValidator
 from django.urls import path
@@ -25,17 +25,15 @@ def websocket_application(services: ConsumerServices) -> OriginValidator:
     )
 
 
-Receive = Callable[[], Awaitable[dict[str, Any]]]
-Send = Callable[[dict[str, Any]], Awaitable[None]]
-
-
 def lifespan_application(
     services: ConsumerServices,
-) -> Callable[[dict[str, Any], Receive, Send], Awaitable[None]]:
+) -> Callable[[LifespanScope, ASGIReceiveCallable, ASGISendCallable], Awaitable[None]]:
     """Synthesizes the greeting in the background when the server starts, and closes the
     services when it shuts down (the ASGI lifespan protocol)."""
 
-    async def application(scope: dict[str, Any], receive: Receive, send: Send) -> None:
+    async def application(
+        scope: LifespanScope, receive: ASGIReceiveCallable, send: ASGISendCallable
+    ) -> None:
         warm_up: asyncio.Task[None] | None = None
         while True:
             message = await receive()

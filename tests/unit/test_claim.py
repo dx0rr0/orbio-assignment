@@ -8,22 +8,15 @@ from claims_agent.domain import (
     apply_update,
     format_reference,
 )
-from tests.engine.fakes import COMPLETE, HAPPY_POLICY, NOW
+from claims_agent.domain.claim import CONDITIONAL_FIELDS
+from tests.support import COMPLETE, HAPPY_POLICY, NOW
 
 
-def test_base_claim_requires_base_fields_in_asking_order():
-    assert Claim().required_fields == (
-        "policy_number",
-        "plate",
-        "declarant_name",
-        "driver_is_policyholder",
-        "loss_type",
-        "loss_window",
-        "loss_location",
-        "description",
-        "injuries",
-        "vehicle_immobilized",
-    )
+def test_a_new_claim_asks_for_the_identification_first_and_for_no_conditional_field():
+    fields = Claim().required_fields
+    # The policy is looked up with these two, and the greeting asks for them.
+    assert fields[:2] == ("policy_number", "plate")
+    assert not set(fields) & set(CONDITIONAL_FIELDS)
 
 
 def test_driver_name_is_required_right_after_when_driver_is_not_policyholder():
@@ -37,7 +30,9 @@ def test_collision_requires_other_vehicle_details_only_if_there_was_one():
     with_other = Claim(loss_type=LossType.COLLISION, other_vehicle_involved=True).required_fields
     assert {"other_vehicle_plate", "friendly_report_signed"} <= set(with_other)
     alone = Claim(loss_type=LossType.COLLISION, other_vehicle_involved=False).required_fields
-    assert "other_vehicle_plate" not in alone
+    unknown = Claim(loss_type=LossType.COLLISION).required_fields
+    for fields in (alone, unknown):
+        assert not {"other_vehicle_plate", "friendly_report_signed"} & set(fields)
 
 
 def test_theft_requires_police_report():

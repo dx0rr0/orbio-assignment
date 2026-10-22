@@ -12,6 +12,8 @@ from claims_agent.domain import (
     ClosureReason,
     Conversation,
     PendingField,
+    apply_update,
+    confirm,
 )
 from claims_agent.engine import ConversationEngine, templates
 from claims_agent.engine.summary import RECORD_KEY_POINTS
@@ -28,6 +30,7 @@ from claims_service.intake.tasks import (
     sweep_abandoned_conversations,
 )
 from tests.engine.fakes import LLM_DOWN, call, no_sleep, say
+from tests.support import COMPLETE, HAPPY_POLICY, NOW
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -116,13 +119,10 @@ def test_a_turn_saved_during_the_sweep_wins(repository, notified, task_services)
 
 
 def confirmed_claim() -> Claim:
-    return Claim(
-        status=ClaimStatus.CONFIRMED,
-        reference="SIN-2026-000001",
-        loss_type="broken_glass",
-        injuries=False,
-        vehicle_immobilized=True,
-    )
+    """The happy path's broken glass, but with a vehicle that cannot be driven."""
+    proposed = COMPLETE | {"vehicle_immobilized": True}
+    claim = apply_update(Claim(), proposed, policy=HAPPY_POLICY, now=NOW).claim
+    return confirm(claim, "SIN-2026-000001")
 
 
 def test_summary_is_stored_and_pushed(repository, notified, llm):

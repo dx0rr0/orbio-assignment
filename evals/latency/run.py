@@ -8,7 +8,7 @@ consumer, with the real STT, LLM and TTS on OpenRouter (see docs/LATENCY.md).
 The consumer runs with the production services, except for the repository and the access
 tokens: the conversation each case starts from is put in memory, so nothing touches the
 development database. Langfuse is off; everything is recorded under
-`.claude/hillclimb/ttfa/<variant>/`: `results.jsonl` (one row per case and rep), `traces/`,
+`evals/latency/results/<variant>/`: `results.jsonl` (one row per case and rep), `traces/`,
 `errors.jsonl` and `summary.json`. One unrecorded turn (WARM_UP) runs first, so the cold start
 (TLS handshakes, the first LLM call) doesn't land on the first case.
 
@@ -36,16 +36,18 @@ from contextlib import AsyncExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Literal, NotRequired, TypedDict
 from uuid import UUID
 
 import httpx
+from pydantic import JsonValue
 
 # Langfuse off and dev defaults, before Django reads the settings.
 os.environ.pop("LANGFUSE_PUBLIC_KEY", None)
 os.environ.setdefault("DJANGO_DEBUG", "true")
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "claims_service.settings")
 
+from channels.security.websocket import OriginValidator
 from channels.testing import WebsocketCommunicator
 
 from claims_agent.adapters.memory import InMemoryConversationRepository
@@ -58,15 +60,15 @@ from claims_agent.domain import (
     apply_update,
     policy_number_to_look_up,
 )
-from claims_agent.engine import templates
+from claims_agent.engine import Voice, templates
 from claims_agent.ports import ChatModel, Completion, NullTelemetry, Span, ToolSpec
 from claims_agent.seed import seed_policies
+from claims_service.intake.presenters import ServerEvent
 from evals.latency.cases import CASES, TEST_IDS, Case, read_back_text, resolve
 
 logger = logging.getLogger(__name__)
 
-ROOT = Path(__file__).resolve().parents[2]
-FLOW = ROOT / ".claude" / "hillclimb" / "ttfa"
+RESULTS = Path(__file__).parent / "results"
 AUDIO = Path(__file__).parent / "audio"
 HARNESS = [Path(__file__), Path(__file__).parent / "cases.py"]
 BUDGET_STOP = 0.78
@@ -82,10 +84,22 @@ TECHNICAL_PROBLEM = templates.technical_problem().text
 
 # --- instrumentation ----------------------------------------------------------------------------
 
+TokenCount = Literal["input_tokens", "cached_input_tokens", "output_tokens"]
+TOKEN_COUNTS: tuple[TokenCount, ...] = ("input_tokens", "cached_input_tokens", "output_tokens")
+
+
+class LLMCall(TypedDict):
+    latency_s: float
+    # A failed call has the error; a completed one the token counts.
+    error: NotRequired[str]
+    input_tokens: NotRequired[int]
+    cached_input_tokens: NotRequired[int]
+    output_tokens: NotRequired[int]
+
 
 @dataclass
 class Meter:
-    llm_calls: list[dict[str, Any]] = field(default_factory=list)
+    llm_calls: list[LLMCall] = field(default_factory=list)
     # Why the voice failed to transcribe ("stt") or to speak ("tts"), as it recorded it.
     speech_errors: dict[str, str] = field(default_factory=dict)
     speech_failed: asyncio.Event = field(default_factory=asyncio.Event)
@@ -101,7 +115,7 @@ class _SpeechSpan:
         self._name = name
         self._meter = meter
 
-    def update(self, *, output: Any = None, metadata: Any = None) -> None:
+    def update(self, *, output: JsonValue = None, metadata: JsonValue = None) -> None:
         if isinstance(metadata, dict) and "error" in metadata:
             self._meter.speech_errors[self._name] = str(metadata["error"])
             self._meter.speech_failed.set()
@@ -115,7 +129,7 @@ class SpeechTelemetry(NullTelemetry):
         self._meter = meter
 
     @contextmanager
-    def span(self, name: str, *, input: Any = None) -> Iterator[Span]:
+    def span(self, name: str, *, input: JsonValue = None) -> Iterator[Span]:
         if name in ("stt", "tts"):
             yield _SpeechSpan(name, self._meter)
         else:
@@ -192,14 +206,14 @@ def harness_sha() -> str:
     return digest.hexdigest()
 
 
-def load_state() -> dict[str, Any]:
-    path = FLOW / "_state.json"
+def load_state() -> dict[str, JsonValue]:
+    path = RESULTS / "_state.json"
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
-def save_state(state: dict[str, Any]) -> None:
-    FLOW.mkdir(parents=True, exist_ok=True)
-    (FLOW / "_state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+def save_state(state: dict[str, JsonValue]) -> None:
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    (RESULTS / "_state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
 # --- one case -----------------------------------------------------------------------------------
@@ -224,8 +238,8 @@ def initial_conversation(case: Case, now: datetime) -> Conversation:
     return Conversation(claim=claim, messages=tuple(messages), created_at=now, updated_at=now)
 
 
-def trace_of(conversation: Conversation) -> list[dict[str, Any]]:
-    turns: list[dict[str, Any]] = []
+def trace_of(conversation: Conversation) -> list[dict[str, str]]:
+    turns: list[dict[str, str]] = []
     for message in conversation.messages:
         if message.role is Role.TOOL:
             turns.append({"role": "tool_result", "content": message.content or ""})
@@ -243,7 +257,7 @@ def trace_of(conversation: Conversation) -> list[dict[str, Any]]:
 class Harness:
     """The consumer's application and what the cases share with it."""
 
-    application: Any
+    application: OriginValidator
     repository: InMemoryConversationRepository
     access: InMemoryAccess
     meter: Meter
@@ -251,20 +265,46 @@ class Harness:
     resources: AsyncExitStack
 
 
-async def next_event(communicator: WebsocketCommunicator, meter: Meter) -> dict[str, Any]:
+async def next_event(communicator: WebsocketCommunicator, meter: Meter) -> ServerEvent:
     """The next event from the consumer, unless the voice reports a failure first."""
     receive = asyncio.ensure_future(communicator.receive_json_from(timeout=CASE_TIMEOUT_S))
     speech_failed = asyncio.ensure_future(meter.speech_failed.wait())
     done, _ = await asyncio.wait({receive, speech_failed}, return_when=asyncio.FIRST_COMPLETED)
     speech_failed.cancel()
     if receive in done:
-        event: dict[str, Any] = receive.result()
+        event: ServerEvent = receive.result()
         return event
     receive.cancel()
     raise RuntimeError(f"speech failed: {meter.speech_errors}")
 
 
-async def run_case(case: Case, harness: Harness) -> dict[str, Any]:
+Grade = TypedDict("Grade", {"pass": float, "checks": float})
+
+
+class CaseRow(TypedDict):
+    """A row of `results.jsonl`: `run_case` returns it with the trace, which goes to its own
+    file, and without the rep, which the run adds."""
+
+    prompt_id: str
+    prompt: str
+    tags: list[str]
+    grade: Grade
+    checks: dict[str, bool]
+    ttfa_s: float
+    stt_s: float
+    engine_s: float
+    tts_first_s: float
+    llm_calls: int
+    llm_failed: int
+    llm_s: float
+    usage: dict[str, int]
+    replies: list[str]
+    status: str
+    rep: NotRequired[int]
+    _trace: NotRequired[list[dict[str, str]]]
+
+
+async def run_case(case: Case, harness: Harness) -> CaseRow:
     now = datetime.now(MADRID)
     conversation = await harness.repository.create(initial_conversation(case, now))
     token = await harness.access.issue_token(conversation.id)
@@ -295,19 +335,18 @@ async def run_case(case: Case, harness: Harness) -> dict[str, Any]:
         # timeout cancels the consumer (asgiref), so the loop never waits for silence.
         while not {"claim_updated", "audio"} <= marks.keys():
             event = await next_event(communicator, meter)
-            kind = event["type"]
-            marks.setdefault(kind, round(time.perf_counter() - started, 3))
-            if kind == "transcript":
+            marks.setdefault(event["type"], round(time.perf_counter() - started, 3))
+            if event["type"] == "transcript":
                 transcript = event["text"]
                 if not transcript:
                     reason = meter.speech_errors.get("stt", "no error recorded")
                     raise RuntimeError(f"empty transcript (the STT failed: {reason})")
-            elif kind == "bot_message":
+            elif event["type"] == "bot_message":
                 if event["text"] == TECHNICAL_PROBLEM:
                     failed = [c["error"] for c in meter.llm_calls if "error" in c]
                     raise RuntimeError(f"the engine apologised for a technical problem: {failed}")
                 replies.append(event["text"])
-            elif kind == "error":
+            elif event["type"] == "error":
                 raise RuntimeError(f"server error: {event['message']}")
     finally:
         # A consumer still sending (or already cancelled by a timeout) makes disconnect raise.
@@ -334,10 +373,7 @@ async def run_case(case: Case, harness: Harness) -> dict[str, Any]:
         "llm_calls": len(meter.llm_calls),
         "llm_failed": sum("error" in c for c in meter.llm_calls),
         "llm_s": round(sum(c["latency_s"] for c in meter.llm_calls), 3),
-        "usage": {
-            name: sum(c.get(name, 0) for c in meter.llm_calls)
-            for name in ("input_tokens", "cached_input_tokens", "output_tokens")
-        },
+        "usage": {name: sum(c.get(name, 0) for c in meter.llm_calls) for name in TOKEN_COUNTS},
         "replies": replies,
         "status": "ok",
         "_trace": trace_of(after),
@@ -370,7 +406,7 @@ def build_harness() -> Harness:
     llm = MeteredChatModel(chat_model, meter)
     consumer_services = services.ConsumerServices(
         engine=ConversationEngine(llm=llm, repository=repository, telemetry=telemetry),
-        voice=services.voice_from_settings(telemetry, resources),
+        voice=Voice(*services.speech_from_settings(resources), telemetry),
         repository=repository,
         telemetry=telemetry,
         access=access,
@@ -398,7 +434,7 @@ async def run_cases(
         if (case_ids is None or c.id in case_ids)
         and (split == "all" or (c.id in TEST_IDS) == (split == "test"))
     ]
-    out = FLOW / variant
+    out = RESULTS / variant
     (out / "traces").mkdir(parents=True, exist_ok=True)
     results_path = out / "results.jsonl"
     done = set()
@@ -464,7 +500,7 @@ async def run_cases(
     spent = key_usage() - start_usage
     # The warm-up turn is paid for like a case.
     turns = len(pending) + 1 if pending else 0
-    summary: dict[str, Any] = {
+    summary: dict[str, JsonValue] = {
         "spent_this_run_usd": round(spent, 6),
         "cost_per_case_usd": round(spent / turns, 6) if turns else None,
     }

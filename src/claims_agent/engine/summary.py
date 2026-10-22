@@ -4,14 +4,7 @@ claim and the transcript; urgency and next steps decided by code."""
 import json
 from collections.abc import Sequence
 
-from claims_agent.domain import (
-    ClaimSummary,
-    Conversation,
-    IncompleteClaimError,
-    Message,
-    Role,
-    ToolCall,
-)
+from claims_agent.domain import ClaimSummary, Conversation, Message, Role, ToolCall
 from claims_agent.domain.next_steps import next_steps
 from claims_agent.ports import ChatModel, LLMError, ToolSpec
 
@@ -49,12 +42,10 @@ class SummaryError(RuntimeError):
 
 
 async def summarize(llm: ChatModel, conversation: Conversation) -> ClaimSummary:
-    """Raises `IncompleteClaimError` if the claim lacks the data urgency is decided from (a
-    confirmed claim never does)."""
+    """Raises `IncompleteClaimError` if the claim is not complete (a confirmed claim always
+    is)."""
     claim = conversation.claim
-    urgency = claim.urgency
-    if urgency is None:
-        raise IncompleteClaimError("urgency needs injuries and vehicle_immobilized")
+    urgency = claim.complete().urgency
     transcript = "\n".join(
         f"{'Declarante' if m.role is Role.USER else 'Agente'}: {m.content}"
         for m in conversation.transcript

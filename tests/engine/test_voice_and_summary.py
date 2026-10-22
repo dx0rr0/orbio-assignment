@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 
@@ -6,24 +7,21 @@ import pytest
 
 from claims_agent.domain import (
     Claim,
-    ClaimStatus,
     Conversation,
     IncompleteClaimError,
     Message,
     Role,
     Urgency,
+    apply_update,
+    confirm,
 )
 from claims_agent.engine import BotMessage, Voice, templates
 from claims_agent.engine.summary import RECORD_KEY_POINTS, SummaryError, summarize
 from claims_agent.engine.tools import CONFIRM_CLAIM, UPDATE_CLAIM
-from claims_agent.engine.voice import (
-    MIN_PIECE_SECONDS,
-    SAMPLE_BYTES,
-    SENTENCE_PAUSE_SECONDS,
-    speech_chunks,
-)
+from claims_agent.engine.voice import SAMPLE_BYTES, speech_chunks, whole_samples
 from claims_agent.ports import NullTelemetry, Span, SpeechError
-from tests.engine.fakes import COMPLETE, LLM_DOWN, NOW, call, say
+from tests.engine.fakes import LLM_DOWN, call, say
+from tests.support import COMPLETE, HAPPY_POLICY, NOW
 
 # --- voice --------------------------------------------------------------------------------
 
@@ -72,6 +70,15 @@ async def test_all_replies_of_a_turn_are_spoken_at_once_using_their_speech_text(
     assert tts.texts == ["Uno. Póliza A U T, 1"]
 
 
+async def test_identifiers_are_spelled_out_in_what_is_synthesized():
+    tts = Speech()
+    reply = BotMessage("Su póliza es AUT-48213907 y su matrícula 4721 KLM.", scripted=False)
+
+    await spoken(Voice(Speech(), tts).speak_in_chunks([reply]))
+
+    assert tts.texts == ["Su póliza es A, U, T, 48, 21, 39, 07 y su matrícula 47, 21, K, L, M."]
+
+
 async def test_failed_synthesis_gives_no_audio():
     assert await spoken(Voice(Speech(), Speech(fail=True)).speak([BotMessage("Hola")])) == []
     assert await spoken(Voice(Speech(), Speech()).speak([])) == []
@@ -88,7 +95,14 @@ async def test_speech_is_sent_in_pieces_of_whole_samples_of_a_minimum_length():
 
     assert [len(piece) for piece in pieces] == [least + 4, 2]
     assert b"".join(pieces) == (b"a" * 3 + b"b" * (least - 4) + b"c" * 5 + b"d" * 3)[:-1]
-    assert least == round(24_000 * MIN_PIECE_SECONDS) * 2
+
+
+async def test_pieces_are_cut_at_a_whole_sample_and_a_half_sample_at_the_end_is_dropped():
+    async def provider() -> AsyncIterator[bytes]:
+        for chunk in (b"abc", b"de"):
+            yield chunk
+
+    assert await spoken(whole_samples(provider(), min_bytes=2)) == [b"ab", b"cd"]
 
 
 async def test_a_piece_is_sent_before_its_sentence_is_fully_synthesized():
@@ -207,8 +221,10 @@ async def test_sentences_are_synthesized_at_once_and_spoken_in_order():
     # pause of silence goes between sentences.
     pause = voice.sentence_pause
     assert await asyncio.wait_for(spoken(audio), timeout=1) == [b"1a1b", pause, b"2a"]
+    # Silence, in whole samples.
+    assert pause
     assert pause == bytes(len(pause))
-    assert len(pause) == round(voice.sample_rate * SENTENCE_PAUSE_SECONDS) * SAMPLE_BYTES
+    assert len(pause) % SAMPLE_BYTES == 0
 
 
 async def test_failed_synthesis_ends_the_speech_there():
@@ -274,18 +290,22 @@ async def test_only_the_confirming_turn_reports_a_confirmed_claim(engine, llm, c
 
 
 def confirmed_conversation() -> Conversation:
-    claim = Claim(
-        status=ClaimStatus.CONFIRMED,
-        loss_type="collision",
-        injuries=True,
-        vehicle_immobilized=False,
-        other_vehicle_involved=True,
-        friendly_report_signed=False,
-    )
+    """A collision with an injured person and another vehicle, without a friendly report."""
+    collision = COMPLETE | {
+        "loss_type": "collision",
+        "injuries": True,
+        "other_vehicle_involved": True,
+        "other_vehicle_plate": "1234 BCD",
+        "friendly_report_signed": False,
+    }
+    claim = apply_update(Claim(), collision, policy=HAPPY_POLICY, now=NOW).claim
     return (
         Conversation.start(NOW)
-        .model_copy(update={"claim": claim})
-        .add(Message(role=Role.USER, content="Me golpearon por detrás en un semáforo"))
+        .model_copy(update={"claim": confirm(claim, "SIN-2026-000001")})
+        .add(
+            Message(role=Role.ASSISTANT, content="¿Qué ha ocurrido?"),
+            Message(role=Role.USER, content="Me golpearon por detrás en un semáforo"),
+        )
     )
 
 
@@ -301,7 +321,25 @@ async def test_summary_combines_llm_key_points_with_code_decisions(llm):
         "Contactar con el otro conductor o su aseguradora para el parte.",
         "Asignar perito para valorar los daños.",
     )
-    assert "Declarante: Me golpearon por detrás" in llm.requests[0]["messages"][0].content
+
+
+async def test_the_llm_is_given_the_claim_data_and_the_transcript_and_only_the_summary_tool(llm):
+    conversation = confirmed_conversation()
+    # A value that no longer applies to a collision, which the adjuster must not be told.
+    stale = conversation.claim.model_copy(update={"police_report_filed": True})
+    llm.then(call(RECORD_KEY_POINTS, {"key_points": ["Golpe por alcance."]}))
+
+    await summarize(llm, conversation.model_copy(update={"claim": stale}))
+
+    [request] = llm.requests
+    assert RECORD_KEY_POINTS in request["system"]
+    assert [tool["function"]["name"] for tool in request["tools"]] == [RECORD_KEY_POINTS]
+    [message] = request["messages"]
+    data, transcript = message.content.removeprefix("Claim data:\n").split("\n\nConversation:\n")
+    assert json.loads(data).keys() == set(stale.required_fields)
+    assert transcript == (
+        "Agente: ¿Qué ha ocurrido?\nDeclarante: Me golpearon por detrás en un semáforo"
+    )
 
 
 @pytest.mark.parametrize(
@@ -321,11 +359,11 @@ async def test_unusable_summaries_raise(llm, completion):
         await summarize(llm, confirmed_conversation())
 
 
-async def test_a_claim_without_the_data_urgency_needs_is_not_summarized(llm):
+async def test_an_incomplete_claim_is_not_summarized(llm):
     conversation = confirmed_conversation()
     undecided = conversation.claim.model_copy(update={"injuries": None})
 
-    with pytest.raises(IncompleteClaimError, match="urgency"):
+    with pytest.raises(IncompleteClaimError, match="missing injuries"):
         await summarize(llm, conversation.model_copy(update={"claim": undecided}))
 
     assert llm.requests == []

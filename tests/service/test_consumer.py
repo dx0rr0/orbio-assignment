@@ -1,6 +1,6 @@
 import asyncio
 import base64
-import time
+import threading
 from dataclasses import replace
 from uuid import UUID, uuid4
 
@@ -17,8 +17,9 @@ from claims_service.intake import consumers
 from claims_service.intake.consumers import NOT_FOUND_CLOSE_CODE, ConversationConsumer
 from claims_service.intake.groups import group_name
 from claims_service.intake.routing import websocket_application
-from tests.engine.fakes import COMPLETE, call, say
+from tests.engine.fakes import call, say
 from tests.service.conftest import FAKE_PCM
+from tests.support import COMPLETE
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -82,29 +83,61 @@ async def test_a_new_call_warms_up_the_provider_connections_at_once(application,
     await communicator.disconnect()
 
 
+class SteppedTime:
+    """A clock that only moves when the test steps it, to the end of the next sleep."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self._sleeps: asyncio.Queue[tuple[float, asyncio.Future[None]]] = asyncio.Queue()
+
+    def clock(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        woken = asyncio.get_running_loop().create_future()
+        self._sleeps.put_nowait((delay, woken))
+        await woken
+
+    async def step(self) -> float:
+        """Waits for the next sleep, ends it and lets the sleeper run to its next await."""
+        delay, woken = await asyncio.wait_for(self._sleeps.get(), timeout=5)
+        self.now += delay
+        woken.set_result(None)
+        await asyncio.sleep(0)
+        return delay
+
+    @property
+    def sleeping(self) -> bool:
+        return not self._sleeps.empty()
+
+
 class QuickToCoolConsumer(ConversationConsumer):
-    warm_up_every_s = 0.05
-    keep_warm_s = 0.3
+    warm_up_every_s = 1.0
+    keep_warm_s = 3.0
 
 
 async def test_the_connections_are_kept_warm_while_the_call_is_active(services, warm_ups, llm):
-    application = URLRouter(
-        [path("ws/conversations/", QuickToCoolConsumer.as_asgi(services=services))]
+    stepped = SteppedTime()
+    consumer = QuickToCoolConsumer.as_asgi(
+        services=services, clock=stepped.clock, sleep=stepped.sleep
     )
-    communicator = await start(application)
+    communicator = await start(URLRouter([path("ws/conversations/", consumer)]))
     await receive_until(communicator, "audio_end")
+    assert len(warm_ups) == 1
 
-    await asyncio.sleep(0.6)  # warmed every 0.05 s for 0.3 s, then nothing
-    cooled = len(warm_ups)
-    assert 4 <= cooled <= 8
-    await asyncio.sleep(0.2)
-    assert len(warm_ups) == cooled
+    for warmed in [2, 3]:
+        assert await stepped.step() == QuickToCoolConsumer.warm_up_every_s
+        assert len(warm_ups) == warmed
+    assert await stepped.step() == QuickToCoolConsumer.warm_up_every_s  # 3 s since the greeting
+
+    assert len(warm_ups) == 3
+    assert not stepped.sleeping  # cooled: nothing more
     llm.then(say("¿Me indica su número de póliza?"))
     await communicator.send_json_to({"type": "text", "text": "Hola"})
     await receive_until(communicator, "claim_updated")
-    await asyncio.sleep(0.1)
 
-    assert len(warm_ups) > cooled  # any message from the declarant starts it again
+    assert len(warm_ups) == 4  # any message from the declarant starts it again
+    assert stepped.sleeping
     await communicator.disconnect()
 
 
@@ -222,6 +255,8 @@ async def test_failed_synthesis_still_sends_the_text(application, llm, tts):
         ([1, 2], "No se ha podido leer el mensaje"),
         ({"type": "video"}, "No se ha podido leer el mensaje"),
         ({"type": "text"}, "No se ha podido leer el mensaje"),
+        ({"type": "text", "text": "Hola", "reply_audio": "yes"}, "No se ha podido leer el mensaje"),
+        ({"type": "resume", "token": "whatever"}, "No se ha podido leer el mensaje"),
         ({"type": "text", "text": "a" * (consumers.MAX_TEXT_CHARS + 1)}, "demasiado largo"),
         ({"type": "audio", "data": "not base64!"}, "No se ha podido leer el audio"),
         (
@@ -389,8 +424,14 @@ async def test_safety_advice_is_flagged_as_an_alert(application, llm):
 
 
 async def test_a_slow_broker_does_not_block_the_event_loop(llm, policies, services):
+    released, returned = threading.Event(), threading.Event()
+    waits: list[bool] = []
+
     def slow_broker(conversation_id: str) -> None:
-        time.sleep(0.5)  # kombu retrying a connection, synchronously
+        # kombu retrying a connection, synchronously, until the test (on the event loop)
+        # releases it: if it ran on the event loop, the test could not.
+        waits.append(released.wait(timeout=5))
+        returned.set()
 
     application = websocket_application(replace(services, request_summary=slow_broker))
     communicator, _ = await started_conversation(application)
@@ -398,21 +439,12 @@ async def test_a_slow_broker_does_not_block_the_event_loop(llm, policies, servic
     await communicator.send_json_to({"type": "text", "text": "Todos los datos"})
     await receive_until(communicator, "claim_updated")
 
-    gaps: list[float] = []
-
-    async def tick() -> None:
-        last = time.monotonic()
-        for _ in range(20):
-            await asyncio.sleep(0.02)
-            gaps.append(time.monotonic() - last)
-            last = time.monotonic()
-
     await communicator.send_json_to({"type": "text", "text": "Sí"})
-    await asyncio.gather(tick(), receive_until(communicator, "claim_updated"))
-    # Let the consumer finish queueing before the test tears the database down.
-    await asyncio.sleep(0.6)
+    await receive_until(communicator, "claim_updated")
+    released.set()
 
-    assert max(gaps) < 0.3
+    assert await asyncio.to_thread(returned.wait, 5)
+    assert waits == [True]
     await communicator.disconnect()
 
 

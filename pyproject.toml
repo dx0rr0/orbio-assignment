@@ -24,6 +24,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "daphne>=4.2.3",
+    "import-linter>=2.15",
     "mypy>=2.4.0",
     "pytest>=8.4",
     "pytest-asyncio>=1.4.0",
@@ -46,6 +47,30 @@ env = ["D:DJANGO_SECRET_KEY=test-only-insecure-key"]
 pythonpath = ["."]
 addopts = "-m 'not e2e'"
 markers = ["e2e: hits real providers; run on demand with `pytest -m e2e`"]
+
+[tool.importlinter]
+root_packages = ["claims_agent", "claims_service"]
+include_external_packages = true
+
+# Hexagonal layers (docs/adr): the domain depends on nothing, ports on the domain, the engine
+# on ports and domain, adapters implement ports; the Django service wires them at the edge.
+[[tool.importlinter.contracts]]
+name = "Core layers depend inwards"
+type = "layers"
+containers = ["claims_agent"]
+layers = ["adapters | engine", "ports", "domain"]
+
+[[tool.importlinter.contracts]]
+name = "The core knows nothing of the service or its frameworks"
+type = "forbidden"
+source_modules = ["claims_agent"]
+forbidden_modules = ["claims_service", "django", "channels", "celery", "ninja"]
+
+[[tool.importlinter.contracts]]
+name = "Only adapters talk to providers"
+type = "forbidden"
+source_modules = ["claims_agent.domain", "claims_agent.ports", "claims_agent.engine"]
+forbidden_modules = ["httpx", "openai", "langfuse"]
 
 [tool.ruff]
 line-length = 100
@@ -72,17 +97,18 @@ select = [
     "FBT001", "FBT002",  # no positional boolean parameters
     "PLW",
 ]
-# `Any` stays allowed in signatures for JSON payloads and framework callbacks.
-ignore = ["ANN401"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "typing.cast".msg = "Type the value properly instead of casting it."
+"typing.Any".msg = "Type it precisely: `object`, a TypedDict, a model or pydantic's `JsonValue`."
 
 [tool.ruff.lint.per-file-ignores]
 # Django declares model options as class attributes.
 "**/models.py" = ["RUF012"]
-# pytest asserts, and test functions need no annotations.
-"tests/**" = ["S101", "ANN"]
+# pytest asserts, and test functions need no annotations (but none may be `Any`, ANN401).
+"tests/**" = [
+    "S101", "ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN204", "ANN205", "ANN206",
+]
 # Command-line tools: printing is their output.
 "scripts/**" = ["T201"]
 "evals/**" = ["T201"]
@@ -90,6 +116,11 @@ ignore = ["ANN401"]
 [tool.mypy]
 python_version = "3.13"
 strict = true
+# No explicit `Any` (ruff bans importing it too); untyped frameworks are handled below.
+disallow_any_explicit = true
+# Without it, mypy reads pydantic's dataclass transform as an `__init__(**data: Any)` on
+# every model, which the rule above rejects.
+plugins = ["pydantic.mypy"]
 files = ["src", "evals", "scripts"]
 exclude = ["/migrations/"]
 # Django, Celery and Channels ship no type information; checking against them is out of scope.
