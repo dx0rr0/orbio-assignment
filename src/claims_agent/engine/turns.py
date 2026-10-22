@@ -20,19 +20,22 @@ from claims_agent.domain import (
     MADRID,
     Claim,
     ClaimStatus,
-    ClosureReason,
     Conversation,
     Message,
     Policy,
     Role,
     ToolCall,
     apply_update,
-    close,
     confirm,
     confirm_value,
     format_reference,
     identified_policy,
     policy_number_to_look_up,
+    record_llm_failure,
+    record_llm_reply,
+    record_refusal,
+    record_understood,
+    record_unintelligible,
 )
 from claims_agent.engine import templates, tools
 from claims_agent.engine.hallucinations import report_reply
@@ -53,12 +56,6 @@ from claims_agent.ports import (
 
 logger = logging.getLogger(__name__)
 
-# Unintelligible utterances in a row before the claim is escalated.
-MAX_REPEAT_REQUESTS = 3
-# Turns in a row without a usable LLM reply before the claim is escalated.
-MAX_LLM_FAILURES = 3
-# Times the declarant may refuse a field: the first gets an explanation, the second closes.
-MAX_REFUSALS = 2
 # LLM calls per turn: tool rounds plus the final reply.
 MAX_LLM_ROUNDS = 4
 # Seconds the LLM part of a turn may take, retries included, before the agent apologises.
@@ -188,7 +185,7 @@ class ConversationEngine:
             conversation, replies = self._unintelligible(conversation)
         else:
             conversation = conversation.add(Message(role=Role.USER, content=utterance.strip()))
-            conversation = conversation.model_copy(update={"unintelligible_streak": 0})
+            conversation = record_understood(conversation)
             conversation, replies = await self._converse(conversation, _Turn(now))
 
         conversation = conversation.model_copy(update={"updated_at": now})
@@ -208,13 +205,10 @@ class ConversationEngine:
     def _unintelligible(
         self, conversation: Conversation
     ) -> tuple[Conversation, tuple[BotMessage, ...]]:
-        streak = conversation.unintelligible_streak + 1
-        conversation = conversation.model_copy(update={"unintelligible_streak": streak})
-        if streak < MAX_REPEAT_REQUESTS:
+        conversation = record_unintelligible(conversation)
+        if not conversation.claim.status.is_final:
             return _say(conversation, templates.ask_to_repeat())
-        claim = close(conversation.claim, ClaimStatus.ESCALATED, ClosureReason.RETRIES_EXHAUSTED)
-        conversation = conversation.model_copy(update={"claim": claim})
-        return _say(conversation, templates.closed(claim, policy=None))
+        return _say(conversation, templates.closed(conversation.claim, policy=None))
 
     async def _converse(
         self, conversation: Conversation, turn: _Turn
@@ -230,13 +224,9 @@ class ConversationEngine:
             else:
                 conversation = error.conversation
             llm_reply = None
-            streak = conversation.llm_failure_streak + 1
-            conversation = conversation.model_copy(update={"llm_failure_streak": streak})
-            if streak >= MAX_LLM_FAILURES and not conversation.claim.status.is_final:
-                claim = close(conversation.claim, ClaimStatus.ESCALATED, ClosureReason.SYSTEM_ERROR)
-                conversation = conversation.model_copy(update={"claim": claim})
+            conversation = record_llm_failure(conversation)
         else:
-            conversation = conversation.model_copy(update={"llm_failure_streak": 0})
+            conversation = record_llm_reply(conversation)
 
         after = conversation.claim
         replies: list[BotMessage] = []
@@ -424,12 +414,10 @@ class ConversationEngine:
         if name in turn.refused_fields:
             return conversation, explain
         turn.refused_fields.add(name)
-        refusals = conversation.refusals | {name: conversation.refusals.get(name, 0) + 1}
-        conversation = conversation.model_copy(update={"refusals": refusals})
-        if refusals[name] < MAX_REFUSALS:
+        conversation = record_refusal(conversation, name)
+        if not conversation.claim.status.is_final:
             return conversation, explain
-        claim = close(conversation.claim, ClaimStatus.INCOMPLETE, ClosureReason.DATA_REFUSED)
-        return conversation.model_copy(update={"claim": claim}), ToolResult(status=claim.status)
+        return conversation, ToolResult(status=conversation.claim.status)
 
 
 def _say(

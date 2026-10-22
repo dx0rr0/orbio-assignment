@@ -7,6 +7,8 @@ import pytest
 from claims_agent.adapters.memory import InMemoryConversationRepository
 from claims_agent.domain import (
     CLAIM_FIELDS,
+    MAX_LLM_FAILURES,
+    MAX_REPEAT_REQUESTS,
     ClaimStatus,
     ClosureReason,
     CoverageIssue,
@@ -17,7 +19,6 @@ from claims_agent.domain import (
 from claims_agent.engine import ConversationEngine, RetryingChatModel, templates, tools
 from claims_agent.engine.retrying import LLM_RETRY_DELAYS
 from claims_agent.engine.tools import CONFIRM_CLAIM, CONFIRM_VALUE, DECLARANT_REFUSES, UPDATE_CLAIM
-from claims_agent.engine.turns import MAX_LLM_FAILURES, MAX_REPEAT_REQUESTS
 from claims_agent.seed import seed_policies
 from tests.engine.fakes import LLM_DOWN, ScriptedLLM, call, calls, no_sleep, say
 from tests.support import COMPLETE, IDENTIFICATION, NEW_POLICY, NOW
