@@ -6,7 +6,7 @@ The vocabulary (loss, claim, declarant, loss window…) is defined in [GLOSSARY.
 
 ## Demo
 
-Video walkthrough: _link to be added_ (happy path, a correction during the read-back, and a loss outside the coverage period).
+Video walkthrough: <https://www.youtube.com/watch?v=l7fzFCCbyWM> (happy path, a correction during the read-back, and a loss outside the coverage period).
 
 ## Running it
 
