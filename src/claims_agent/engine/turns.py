@@ -4,7 +4,7 @@ moves the claim between statuses and writes every critical message (ADR-0002).
 Each turn loads the conversation, processes the declarant's utterance and saves it, so any
 server process can handle any turn. An utterance with nothing to understand is answered
 without the LLM. Otherwise the LLM runs its tools (`tool_loop`, `tool_handlers`), and the
-reply is a template if the claim changed in a way only code may announce (`scripts`), else
+reply is a template if the claim changed in a way only code may announce (`scripted`), else
 the LLM's own, else an apology. The limits on what may go wrong live in `domain.limits`.
 """
 
@@ -27,7 +27,7 @@ from claims_agent.domain import (
 )
 from claims_agent.engine import templates
 from claims_agent.engine.hallucinations import report_reply
-from claims_agent.engine.scripts import needs_script, script
+from claims_agent.engine.scripted import needs_script, script
 from claims_agent.engine.templates import BotMessage
 from claims_agent.engine.tool_handlers import ToolHandlers, Turn
 from claims_agent.engine.tool_loop import LLMUnavailableError, ToolLoop

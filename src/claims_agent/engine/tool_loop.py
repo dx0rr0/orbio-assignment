@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from claims_agent.domain import Conversation, Message, Role, ToolCall
 from claims_agent.engine import tools
 from claims_agent.engine.prompts import system_prompt
-from claims_agent.engine.scripts import needs_script, policy_of
+from claims_agent.engine.scripted import needs_script, policy_of
 from claims_agent.engine.tool_handlers import ToolHandlers, Turn
 from claims_agent.engine.tools import ToolResult
 from claims_agent.ports import ChatModel, Completion, LLMError, PolicyCatalog
