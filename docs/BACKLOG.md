@@ -13,7 +13,3 @@ A Celery beat task every 5 minutes looks at the last 15 minutes in Postgres and 
 ## Frustration detection where code decides
 
 Each turn, the LLM (or a small classifier) reports a frustration score from 0 to 1 alongside its tool calls; the code decides what to do with it (ADR-0002). The bot says an empathy line from a template and, after N frustrated turns, offers to hand over to a person. The score is recorded in Langfuse, and a new eval scenario covers it. Reuses the assignment's sentiment-analysis bonus. Touches `engine/tools.py`, `engine/turns.py`, `engine/templates.py` and `evals/scenarios.py`. Estimate: 2–3 h; the main risk is false positives.
-
-## Pre-recorded audio for fixed templates
-
-Messages whose text never changes are synthesized once, not on every turn: free and instant afterwards. At least the greeting, which every conversation starts with; also `ask_to_repeat`, `technical_problem` and `emergency_advice` (ADR-0005), which today wait for the TTS when they matter most. The audio is generated at deploy time, or the first time it is needed and then cached, keyed by the TTS model, the voice and the text, so a change of any of them regenerates it. Templates with parameters (read-back, reference, closing) still go through the TTS; their fixed sentences could be cached too, since replies are already spoken by sentence. Touches `engine/voice.py` and a cache port with a file or Redis adapter. Estimate: 2 h.

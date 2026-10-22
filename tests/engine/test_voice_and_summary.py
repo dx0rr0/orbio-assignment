@@ -13,7 +13,7 @@ from claims_agent.domain import (
     Role,
     Urgency,
 )
-from claims_agent.engine import BotMessage, Voice
+from claims_agent.engine import BotMessage, Voice, templates
 from claims_agent.engine.summary import RECORD_KEY_POINTS, SummaryError, summarize
 from claims_agent.engine.tools import CONFIRM_CLAIM, UPDATE_CLAIM
 from claims_agent.engine.voice import MIN_PIECE_SECONDS, speech_chunks
@@ -101,6 +101,53 @@ async def test_a_piece_is_sent_before_its_sentence_is_fully_synthesized():
 
     assert first == b"x" * 100_000
     assert await spoken(audio) == [b"y" * 2]
+
+
+# --- fixed messages -----------------------------------------------------------------------
+
+
+async def test_the_greeting_is_synthesized_once_and_then_replayed():
+    tts = Speech()
+    tts.pieces[templates.greeting().spoken] = [b"saludo" * 2_000, b"fin"]
+    voice = Voice(Speech(), tts)
+
+    first = await spoken(voice.speak([templates.greeting()]))
+    again = await spoken(voice.speak([templates.greeting()]))
+
+    assert again == first
+    assert b"".join(first).startswith(b"saludo")
+    assert tts.texts == [templates.greeting().spoken]
+
+
+async def test_fixed_messages_spoken_by_sentence_are_kept_too():
+    tts = Speech()
+    voice = Voice(Speech(), tts)
+
+    for _ in range(2):
+        await spoken(voice.speak_in_chunks([templates.emergency_advice()]))
+
+    assert tts.texts == speech_chunks(templates.emergency_advice().spoken)
+
+
+async def test_replies_written_by_the_llm_are_synthesized_every_time():
+    tts = Speech()
+    voice = Voice(Speech(), tts)
+    reply = BotMessage("Gracias, María. ¿Conducía usted el vehículo?", scripted=False)
+
+    for _ in range(2):
+        await spoken(voice.speak_in_chunks([reply]))
+
+    assert tts.texts == [reply.spoken, reply.spoken]
+
+
+async def test_a_failed_synthesis_is_not_kept():
+    tts = Speech(fail=True)
+    voice = Voice(Speech(), tts)
+    await spoken(voice.speak([templates.greeting()]))
+    tts.fail = False
+
+    assert await spoken(voice.speak([templates.greeting()])) == [b"pc"]
+    assert len(tts.texts) == 2
 
 
 # --- speech by sentence -------------------------------------------------------------------

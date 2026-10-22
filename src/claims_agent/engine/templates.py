@@ -145,6 +145,11 @@ def emergency_advice() -> BotMessage:
     )
 
 
+def fixed_messages() -> tuple[BotMessage, ...]:
+    """The messages whose text never changes, so their speech can be synthesized once."""
+    return (greeting(), ask_to_repeat(), technical_problem(), emergency_advice())
+
+
 def read_back(incomplete: Claim) -> BotMessage:
     """The complete claim, for the declarant to confirm. Raises `IncompleteClaimError` if
     anything is missing."""

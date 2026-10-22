@@ -1,5 +1,7 @@
 """Speech at the edges of a turn. Failures degrade instead of breaking the turn: a failed
-transcription counts as an unintelligible utterance, a failed synthesis as a text-only reply."""
+transcription counts as an unintelligible utterance, a failed synthesis as a text-only reply.
+The speech of the fixed messages (the greeting first) is synthesized once per process and
+replayed after that: instant and free."""
 
 import asyncio
 import logging
@@ -7,7 +9,7 @@ import re
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import aclosing
 
-from claims_agent.engine.templates import BotMessage
+from claims_agent.engine.templates import BotMessage, fixed_messages, greeting
 from claims_agent.ports import NullTelemetry, SpeechError, SpeechToText, Telemetry, TextToSpeech
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,16 @@ def speech_chunks(text: str) -> list[str]:
     return chunks
 
 
+def _fixed_texts() -> frozenset[str]:
+    """What is synthesized for a fixed message said alone: all of it (`Voice.speak`) or each
+    of its sentences (`Voice.speak_in_chunks`)."""
+    return frozenset(
+        text
+        for message in fixed_messages()
+        for text in (message.spoken, *speech_chunks(message.spoken))
+    )
+
+
 class Voice:
     def __init__(
         self, stt: SpeechToText, tts: TextToSpeech, telemetry: Telemetry | None = None
@@ -48,6 +60,11 @@ class Voice:
         self._stt = stt
         self._tts = tts
         self._telemetry = telemetry or NullTelemetry()
+        self._fixed = _fixed_texts()
+        # The speech of fixed texts, as the pieces it was first yielded in. Only fixed texts:
+        # the LLM's replies carry the declarant's data. A new TTS model or voice comes with a
+        # restart, which empties it.
+        self._kept: dict[str, tuple[bytes, ...]] = {}
 
     async def transcribe(self, audio: bytes) -> str:
         """The transcription, or "" if it failed (the engine then asks to repeat)."""
@@ -60,6 +77,13 @@ class Voice:
                 return ""
             span.update(output=text)
             return text
+
+    async def warm_up(self) -> None:
+        """Synthesizes the greeting before the first conversation, so it is instant from the
+        start. A failure is logged and left for the first conversation to retry."""
+        async with aclosing(self.speak([greeting()])) as pieces:
+            async for _ in pieces:
+                pass
 
     @property
     def sample_rate(self) -> int:
@@ -105,19 +129,26 @@ class Voice:
 
     async def _synthesize(self, text: str, pieces: asyncio.Queue[bytes | None]) -> bool:
         """Puts the speech of `text` in `pieces`, then None; False if the synthesis failed."""
+        if (kept := self._kept.get(text)) is not None:
+            for piece in kept:
+                pieces.put_nowait(piece)
+            pieces.put_nowait(None)
+            return True
         with self._telemetry.span("tts", input=text) as span:
-            sent = 0
+            received: list[bytes] = []
             try:
                 async for piece in whole_samples(self._tts.stream(text), self.min_piece_bytes):
                     pieces.put_nowait(piece)
-                    sent += len(piece)
+                    received.append(piece)
             except SpeechError as error:
                 logger.exception("Speech synthesis failed; replying in text only")
                 span.update(metadata={"error": str(error)})
                 return False
             finally:
                 pieces.put_nowait(None)
-            span.update(output={"pcm_bytes": sent})
+            span.update(output={"pcm_bytes": sum(len(piece) for piece in received)})
+            if text in self._fixed:
+                self._kept[text] = tuple(received)
             return True
 
     @property

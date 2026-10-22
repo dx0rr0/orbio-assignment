@@ -1,5 +1,6 @@
 """WebSocket routes and the server's lifespan, around the services the consumer runs with."""
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -31,14 +32,19 @@ Send = Callable[[dict[str, Any]], Awaitable[None]]
 def lifespan_application(
     services: ConsumerServices,
 ) -> Callable[[dict[str, Any], Receive, Send], Awaitable[None]]:
-    """Closes the services when the server shuts down (the ASGI lifespan protocol)."""
+    """Synthesizes the greeting in the background when the server starts, and closes the
+    services when it shuts down (the ASGI lifespan protocol)."""
 
     async def application(scope: dict[str, Any], receive: Receive, send: Send) -> None:
+        warm_up: asyncio.Task[None] | None = None
         while True:
             message = await receive()
             if message["type"] == "lifespan.startup":
+                warm_up = asyncio.create_task(services.voice.warm_up())
                 await send({"type": "lifespan.startup.complete"})
             elif message["type"] == "lifespan.shutdown":
+                if warm_up is not None:
+                    warm_up.cancel()
                 await services.aclose()
                 await send({"type": "lifespan.shutdown.complete"})
                 return
