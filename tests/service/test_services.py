@@ -30,10 +30,17 @@ async def test_an_unexpected_error_is_not_hidden():
         await connections_warm_up(Client(ValueError("bug")))()
 
 
-@pytest.mark.parametrize("build", [services.for_consumer, services.for_tasks])
-def test_without_an_openrouter_key_the_service_does_not_start(settings, build):
+def test_without_an_openrouter_key_the_service_does_not_start(settings):
     # Rather than start and apologise on every turn.
     settings.OPENROUTER_API_KEY = ""
 
     with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY"):
-        build()
+        services.for_consumer()
+
+
+def test_without_an_openrouter_key_the_tasks_that_need_no_llm_still_run(settings):
+    # Celery only logs an error raised while a worker process starts, and an unconfigured
+    # worker would not sweep abandoned conversations either.
+    settings.OPENROUTER_API_KEY = ""
+
+    assert services.for_tasks().repository is not None

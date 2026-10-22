@@ -175,8 +175,8 @@ def for_api() -> DjangoConversationRepository:
 
 
 def for_tasks() -> TaskServices:
-    # Each summary builds its own chat model; say what is missing as the worker starts.
-    _openrouter_api_key()
+    # Each summary builds its own chat model, which checks the key. Not here: Celery only logs
+    # an error raised as a worker process starts, and the worker would run unconfigured.
     return TaskServices(
         repository=DjangoConversationRepository(),
         telemetry=telemetry_from_settings(),
