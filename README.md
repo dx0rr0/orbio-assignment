@@ -35,13 +35,87 @@ Services: `frontend` (nginx serving the React app and proxying `/api` and `/ws`)
 
 ## Architecture and key design decisions
 
+```mermaid
+flowchart LR
+    browser["<b>Browser</b><br/>React · push-to-talk<br/>transcript and claim stages"]
+    nginx["<b>nginx</b><br/>serves the app<br/>proxies /ws and /api"]
+
+    subgraph backend["Backend · Django on uvicorn"]
+        direction TB
+        edge["<b>WebSocket consumer · REST API</b><br/>Channels · django-ninja"]
+        core["<b>claims_agent</b> (hexagonal core)<br/>engine: turn loop, tools, templates<br/>domain: validation, status, urgency, coverage"]
+        edge --> core
+    end
+
+    subgraph celery["Celery"]
+        direction TB
+        worker["<b>worker</b><br/>adjuster summary"]
+        beat["<b>beat</b><br/>abandonment sweep<br/>lost summaries"]
+    end
+
+    subgraph openrouter["OpenRouter"]
+        direction TB
+        stt["<b>STT</b><br/>mai-transcribe-2"]
+        llm["<b>LLM</b><br/>gemini-3.1-flash-lite"]
+        tts["<b>TTS</b><br/>mai-voice-2.1-flash"]
+    end
+
+    db[("<b>Postgres</b><br/>conversations as JSON<br/>policies")]
+    redis[("<b>Redis</b><br/>channel layer · broker")]
+    langfuse["<b>Langfuse</b><br/>a session per conversation<br/>a trace per turn"]
+
+    browser <-- "Ogg Opus up · PCM speech down" --> nginx
+    nginx <--> backend
+    backend --> openrouter
+    backend <--> db
+    backend <--> redis
+    redis <--> celery
+    worker --> llm
+    backend -.-> langfuse
+    celery -.-> langfuse
+
+    classDef provider fill:#e8f0fe,stroke:#4a6fd1,color:#1b2b55
+    classDef store fill:#fff4e0,stroke:#c98a12,color:#4a3300
+    classDef observe fill:#f1ecff,stroke:#7a55d1,color:#2e1b5c
+    class stt,llm,tts provider
+    class db,redis store
+    class langfuse observe
 ```
-browser ──Ogg Opus────▶ WebSocket consumer ──▶ STT ──▶ engine turn ──▶ TTS ──▶ browser
- (push-to-talk)          (Django Channels)              │
-                                                        ├─ LLM: converses, proposes values via tools
-                                                        ├─ domain: validates, decides status / urgency / coverage
-                                                        └─ Postgres: conversation document (load → process → save)
-                                        Celery: claim summary after confirmation (re-queued if lost) · abandonment sweep
+
+One turn, from the declarant's speech to the agent's:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor D as Declarant
+    participant B as Browser
+    participant C as WebSocket consumer
+    participant OR as OpenRouter<br/>(STT · LLM · TTS)
+    participant E as Engine + domain
+    participant P as Postgres
+
+    D->>B: holds the button and speaks
+    B->>C: Ogg Opus audio
+    C->>OR: STT
+    OR-->>C: transcript
+    C-->>B: transcript
+    C->>E: handle the utterance
+    E->>P: load the conversation, mark it active
+    loop until the LLM answers without tools (or a template must speak)
+        E->>OR: LLM: prompt with the claim state, tools
+        OR-->>E: reply and tool calls (update_claim…)
+        E->>E: domain validates each value, decides status, urgency, coverage
+    end
+    E->>P: save (optimistic version check)
+    E-->>C: replies: the LLM's or a template's
+    C-->>B: bot message, claim update
+    par each sentence at once, played in order
+        C->>OR: TTS
+        OR-->>C: 24 kHz PCM
+        C-->>B: audio as it arrives
+    end
+    B->>D: speech plays, claim panel fills in
+    Note over C,E: Every step is a span of the turn's Langfuse trace
 ```
 
 **Code owns the flow; the LLM converses** ([ADR-0002](docs/adr/0002-code-owns-the-flow-llm-converses.md)). On each turn the LLM talks freely and proposes field values through an `update_claim` tool. Python validates them (policy exists, plate matches it, loss not in the future, province is one of the 52, …) and keeps only valid values. It also decides when the claim is complete, its urgency (from injuries and an immobilized vehicle, never asked), whether the policy covers the loss window, and every status transition. The LLM gets each rejection back as a specific error and explains it to the declarant. Three failures on the same field escalate the claim to an adjuster.
