@@ -9,6 +9,7 @@ from claims_agent.domain import (
     ClaimClosedError,
     ClaimStatus,
     ClosureReason,
+    CoverageIssue,
     InvalidTransitionError,
     LossType,
     PendingField,
@@ -225,7 +226,7 @@ LAST_YEAR = {"start": "2025-06-01T10:00"}
 def test_loss_abroad_is_flagged_and_not_covered_once_confirmed():
     claim = update(loss_location=ABROAD).claim
     assert claim.status is ClaimStatus.IN_PROGRESS
-    assert claim.coverage_issue is ClosureReason.OUTSIDE_SPAIN
+    assert claim.coverage_issue is CoverageIssue.OUTSIDE_SPAIN
     assert claim.value_to_confirm == "loss_location"
 
     claim = confirm_value(claim)
@@ -236,7 +237,7 @@ def test_loss_abroad_is_flagged_and_not_covered_once_confirmed():
 def test_loss_outside_the_coverage_period_is_not_covered_once_confirmed():
     claim = update(**IDENTIFIED, loss_window=LAST_YEAR).claim
     assert claim.status is ClaimStatus.IN_PROGRESS
-    assert claim.coverage_issue is ClosureReason.OUTSIDE_COVERAGE_PERIOD
+    assert claim.coverage_issue is CoverageIssue.OUTSIDE_COVERAGE_PERIOD
     assert claim.value_to_confirm == "loss_window"
 
     claim = confirm_value(claim)
@@ -260,7 +261,7 @@ def test_correcting_a_flagged_value_reopens_the_flow():
 def test_a_complete_claim_with_a_flagged_value_is_not_read_back():
     claim = update(complete_claim(), loss_window=LAST_YEAR).claim
     assert claim.status is ClaimStatus.IN_PROGRESS
-    assert claim.coverage_issue is ClosureReason.OUTSIDE_COVERAGE_PERIOD
+    assert claim.coverage_issue is CoverageIssue.OUTSIDE_COVERAGE_PERIOD
 
 
 def test_a_value_can_only_be_confirmed_while_one_is_flagged():
@@ -272,7 +273,7 @@ def test_coverage_is_checked_when_the_policy_arrives_after_the_window():
     claim = update(policy=None, loss_window=LAST_YEAR).claim
     assert claim.coverage_issue is None
     claim = update(claim, **IDENTIFIED).claim
-    assert claim.coverage_issue is ClosureReason.OUTSIDE_COVERAGE_PERIOD
+    assert claim.coverage_issue is CoverageIssue.OUTSIDE_COVERAGE_PERIOD
 
 
 def test_coverage_is_not_checked_until_the_plate_matches_the_policy():
@@ -282,7 +283,7 @@ def test_coverage_is_not_checked_until_the_plate_matches_the_policy():
     claim = update(policy_number="AUT-00000001", loss_window=LAST_YEAR).claim
     assert claim.coverage_issue is None
     claim = update(claim, plate="1234 BCD").claim
-    assert claim.coverage_issue is ClosureReason.OUTSIDE_COVERAGE_PERIOD
+    assert claim.coverage_issue is CoverageIssue.OUTSIDE_COVERAGE_PERIOD
 
 
 def test_window_partly_outside_the_coverage_period_is_escalated_once_confirmed():
@@ -291,7 +292,7 @@ def test_window_partly_outside_the_coverage_period_is_escalated_once_confirmed()
         loss_type="theft",
         loss_window={"start": "2025-12-31T20:00", "end": "2026-01-01T09:00"},
     ).claim
-    assert claim.coverage_issue is ClosureReason.PARTIAL_COVERAGE
+    assert claim.coverage_issue is CoverageIssue.PARTIAL_COVERAGE
 
     claim = confirm_value(claim)
     assert claim.status is ClaimStatus.ESCALATED

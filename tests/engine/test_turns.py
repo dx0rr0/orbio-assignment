@@ -5,7 +5,15 @@ from datetime import timedelta
 import pytest
 
 from claims_agent.adapters.memory import InMemoryConversationRepository
-from claims_agent.domain import CLAIM_FIELDS, ClaimStatus, ClosureReason, LossType, Role, close
+from claims_agent.domain import (
+    CLAIM_FIELDS,
+    ClaimStatus,
+    ClosureReason,
+    CoverageIssue,
+    LossType,
+    Role,
+    close,
+)
 from claims_agent.engine import ConversationEngine, templates, tools
 from claims_agent.engine.tools import CONFIRM_CLAIM, CONFIRM_VALUE, DECLARANT_REFUSES, UPDATE_CLAIM
 from claims_agent.engine.turns import LLM_RETRY_DELAYS, MAX_LLM_FAILURES, MAX_REPEAT_REQUESTS
@@ -384,7 +392,7 @@ async def test_a_value_outside_the_coverage_period_is_stated_back_for_confirmati
 
     claim = result.conversation.claim
     assert claim.status is ClaimStatus.IN_PROGRESS
-    assert claim.coverage_issue is ClosureReason.OUTSIDE_COVERAGE_PERIOD
+    assert claim.coverage_issue is CoverageIssue.OUTSIDE_COVERAGE_PERIOD
     assert len(llm.requests) == 1  # the question is a template
     assert texts(result) == [templates.confirm_coverage_value(claim, NEW_POLICY).text]
     assert "13 de octubre de 2026" in result.replies[0].text

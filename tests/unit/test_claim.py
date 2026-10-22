@@ -1,14 +1,19 @@
 import pytest
+from pydantic import ValidationError
 
 from claims_agent.domain import (
     Claim,
+    ClaimStatus,
+    ClosureReason,
+    CoverageIssue,
     IncompleteClaimError,
     LossType,
+    PendingField,
     Urgency,
     apply_update,
     format_reference,
 )
-from claims_agent.domain.claim import CONDITIONAL_FIELDS
+from claims_agent.domain.claim import CONDITIONAL_FIELDS, COVERAGE_ISSUES
 from tests.support import COMPLETE, HAPPY_POLICY, NOW
 
 
@@ -75,3 +80,60 @@ def test_a_complete_claim_keeps_only_the_values_that_apply():
 def test_an_incomplete_claim_says_what_it_is_missing():
     with pytest.raises(IncompleteClaimError, match="missing policy_number, plate, declarant_name"):
         Claim().complete()
+
+
+# --- states the lifecycle never produces ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"status": ClaimStatus.CONFIRMED},
+        {"reference": "SIN-2026-000001"},
+        {"status": ClaimStatus.PENDING_CONFIRMATION, "reference": "SIN-2026-000001"},
+        {"status": ClaimStatus.INCOMPLETE},
+        {"closure_reason": ClosureReason.ABANDONED},
+        {
+            "status": ClaimStatus.CONFIRMED,
+            "reference": "SIN-2026-000001",
+            "closure_reason": ClosureReason.ABANDONED,
+        },
+        {"pending_fields": [{"field": "plate"}]},
+        {"status": ClaimStatus.PENDING_CONFIRMATION, "coverage_issue": "outside_spain"},
+        {
+            "status": ClaimStatus.CONFIRMED,
+            "reference": "SIN-2026-000001",
+            "coverage_issue": "outside_spain",
+        },
+    ],
+)
+def test_a_status_that_contradicts_the_claim_data_is_rejected(state):
+    with pytest.raises(ValidationError):
+        Claim.model_validate(state)
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        Claim(),
+        Claim(coverage_issue=CoverageIssue.OUTSIDE_SPAIN),
+        Claim(status=ClaimStatus.CONFIRMED, reference="SIN-2026-000001"),
+        Claim(
+            status=ClaimStatus.NOT_COVERED,
+            closure_reason=ClosureReason.OUTSIDE_SPAIN,
+            coverage_issue=CoverageIssue.OUTSIDE_SPAIN,
+            pending_fields=(PendingField(field="plate"),),
+        ),
+        Claim(status=ClaimStatus.INCOMPLETE, closure_reason=ClosureReason.ABANDONED),
+    ],
+)
+def test_the_states_the_lifecycle_produces_survive_a_round_trip_through_json(claim):
+    assert Claim.model_validate_json(claim.model_dump_json()) == claim
+
+
+def test_a_coverage_issue_is_stored_with_the_spelling_of_its_closure_reason():
+    # Conversations stored before the issue had its own type must still load the same.
+    for issue, outcome in COVERAGE_ISSUES.items():
+        assert issue.value == outcome.reason.value
+        claim = Claim.model_validate({"coverage_issue": outcome.reason.value})
+        assert claim.coverage_issue is issue
