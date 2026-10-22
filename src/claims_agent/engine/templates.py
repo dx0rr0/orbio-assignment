@@ -188,7 +188,10 @@ def read_back(incomplete: Claim) -> BotMessage:
             f"Resumo su declaración: {_LOSS_TYPE_SUMMARY[claim.loss_type]}, "
             f"{format_loss_window(claim.loss_window)}, en {place}."
         ),
-        f"{injuries} y el vehículo {vehicle}.",
+        # A stolen vehicle is neither drivable nor immobilized.
+        f"{injuries}."
+        if claim.loss_type is LossType.THEFT
+        else f"{injuries} y el vehículo {vehicle}.",
     ]
     if claim.loss_type is LossType.COLLISION:
         # Set exactly when another vehicle was involved.

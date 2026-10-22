@@ -119,7 +119,7 @@ def test_the_read_back_of_a_theft_says_whether_it_was_reported():
     text = read_back(claim).text
 
     assert text.startswith("Resumo su declaración: un robo,")
-    assert "Ya ha presentado denuncia. ¿Es correcto?" in text
+    assert "No hubo heridos. Ya ha presentado denuncia. ¿Es correcto?" in text
 
 
 def test_the_read_back_leaves_out_what_was_checked_or_said_by_the_declarant():
