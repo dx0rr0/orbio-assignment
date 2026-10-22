@@ -8,6 +8,8 @@ export interface OpusPacket {
 
 // An Ogg page holds at most 255 lacing values.
 const MAX_SEGMENTS = 255
+// A second of 20 ms packets per page, as ffmpeg's muxer does.
+const MAX_PAGE_PACKETS = 50
 const SERIAL = 1
 
 const CRC_TABLE = Uint32Array.from({ length: 256 }, (_, n) => {
@@ -38,7 +40,8 @@ export function opusHead(sampleRate: number, preSkip: number): Uint8Array {
 
 /**
  * The Ogg Opus file of `packets`: the `head` (OpusHead) and an empty OpusTags on pages of
- * their own, then the audio packets.
+ * their own, then the audio packets. MAI Transcribe rejects a file (HTTP 400) whose audio is
+ * all on one page, so the last packet always gets a page of its own.
  */
 export function encodeOggOpus(head: Uint8Array, packets: OpusPacket[]): Uint8Array {
   const preSkip = new DataView(head.buffer, head.byteOffset).getUint16(10, true)
@@ -53,11 +56,13 @@ export function encodeOggOpus(head: Uint8Array, packets: OpusPacket[]): Uint8Arr
   }
   packets.forEach((packet, i) => {
     const needed = Math.floor(packet.data.length / 255) + 1
-    if (segments + needed > MAX_SEGMENTS) flush(false)
+    const last = i === packets.length - 1
+    const full = segments + needed > MAX_SEGMENTS || batch.length === MAX_PAGE_PACKETS
+    if (batch.length > 0 && (full || last)) flush(false)
     batch.push(packet.data)
     segments += needed
     granule += packet.samples
-    if (i === packets.length - 1) flush(true)
+    if (last) flush(true)
   })
   if (packets.length === 0) flush(true)
   return concat(pages)

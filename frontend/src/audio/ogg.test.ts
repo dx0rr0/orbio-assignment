@@ -59,39 +59,61 @@ describe('encodeOggOpus', () => {
   const head = opusHead(48_000, 312)
 
   it('puts the headers on pages of their own, then the audio', () => {
-    const pages = readPages(encodeOggOpus(head, [packet(60), packet(70)]))
+    const pages = readPages(encodeOggOpus(head, [packet(60), packet(70), packet(80)]))
 
-    expect(pages.map((page) => page.sequence)).toEqual([0, 1, 2])
-    expect(pages.map((page) => page.flags)).toEqual([0x02, 0, 0x04])
+    expect(pages.map((page) => page.sequence)).toEqual([0, 1, 2, 3])
+    expect(pages.map((page) => page.flags)).toEqual([0x02, 0, 0, 0x04])
     expect(pages[0].packets).toEqual([head])
     expect(String.fromCharCode(...pages[1].packets[0].subarray(0, 8))).toBe('OpusTags')
-    expect(pages[2].packets.map((p) => p.length)).toEqual([60, 70])
+    expect(pages.slice(2).map((page) => page.packets.map((p) => p.length))).toEqual([
+      [60, 70],
+      [80],
+    ])
     expect(pages.every((page) => page.crcMatches)).toBe(true)
+  })
+
+  // MAI Transcribe rejects (HTTP 400) an Ogg file whose audio is all on one page.
+  it('puts the last packet on a page of its own, so the audio spans at least two', () => {
+    const pages = readPages(encodeOggOpus(head, [packet(60), packet(60)])).slice(2)
+
+    expect(pages.map((page) => page.packets.length)).toEqual([1, 1])
+    expect(pages.map((page) => page.flags)).toEqual([0, 0x04])
   })
 
   it('counts granule positions in 48 kHz samples from the pre-skip', () => {
     const pages = readPages(encodeOggOpus(head, [packet(60), packet(60), packet(60)]))
 
-    expect(pages.map((page) => page.granule)).toEqual([0, 0, 312 + 3 * 960])
+    expect(pages.map((page) => page.granule)).toEqual([0, 0, 312 + 2 * 960, 312 + 3 * 960])
   })
 
   it('laces packets of 255 bytes or more over several segments', () => {
     const packets = [packet(255, 2), packet(600, 3), packet(10, 4)]
 
-    const [, , audio] = readPages(encodeOggOpus(head, packets))
+    const audio = readPages(encodeOggOpus(head, packets)).slice(2)
 
-    expect(audio.packets).toEqual(packets.map((p) => p.data))
+    expect(audio.flatMap((page) => page.packets)).toEqual(packets.map((p) => p.data))
   })
 
-  it('starts a new page when one is full', () => {
-    const packets = Array.from({ length: 300 }, (_, i) => packet(50, i % 250))
+  it('starts a new page every second of audio', () => {
+    const packets = Array.from({ length: 120 }, (_, i) => packet(50, i % 250))
 
     const pages = readPages(encodeOggOpus(head, packets)).slice(2)
 
-    expect(pages.map((page) => page.packets.length)).toEqual([255, 45])
-    expect(pages.map((page) => page.flags)).toEqual([0, 0x04])
-    expect(pages.map((page) => page.granule)).toEqual([312 + 255 * 960, 312 + 300 * 960])
+    expect(pages.map((page) => page.packets.length)).toEqual([50, 50, 19, 1])
+    expect(pages.map((page) => page.flags)).toEqual([0, 0, 0, 0x04])
+    expect(pages.map((page) => page.granule)).toEqual(
+      [50, 100, 119, 120].map((n) => 312 + n * 960),
+    )
     expect(pages.flatMap((page) => page.packets)).toEqual(packets.map((p) => p.data))
+  })
+
+  it('starts a new page when the lacing values run out', () => {
+    const packets = Array.from({ length: 10 }, () => packet(255 * 30))
+
+    const pages = readPages(encodeOggOpus(head, packets)).slice(2)
+
+    // 31 lacing values each: 8 packets fill 248 of the 255.
+    expect(pages.map((page) => page.packets.length)).toEqual([8, 1, 1])
   })
 })
 
