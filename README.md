@@ -2,7 +2,7 @@
 
 A voice agent that takes the first notice of loss for a fictional car insurer (*Seguros Brisa*). The declarant talks to it in Spanish; it collects the claim, validates every field against the insured policy, reads the claim back for confirmation and issues a reference (`SIN-2026-000123`). A background task then writes a summary for the adjuster.
 
-The vocabulary (loss, claim, declarant, loss window…) is defined in [GLOSSARY.md](GLOSSARY.md), the original plan in [docs/PLAN.md](docs/PLAN.md), the architectural decisions in [docs/adr](docs/adr), and known bugs and parked work in [docs/BUGS.md](docs/BUGS.md) and [docs/BACKLOG.md](docs/BACKLOG.md).
+The vocabulary (loss, claim, declarant, loss window…) is defined in [GLOSSARY.md](GLOSSARY.md) and the architectural decisions in [docs/adr](docs/adr).
 
 ## Demo
 
@@ -33,7 +33,7 @@ Five demo policies are seeded, with dates relative to today, one per scenario:
 
 Services: `frontend` (nginx serving the React app and proxying `/api` and `/ws`), `backend` (Django on uvicorn), `worker` and `beat` (Celery), `db` (Postgres) and `redis`. Only the frontend is meant for the browser; the backend is reached through its proxy. The host ports are 8080, 55432 and 6380, chosen not to clash with local installs.
 
-## How it works
+## Architecture and key design decisions
 
 ```
 browser ──Ogg Opus────▶ WebSocket consumer ──▶ STT ──▶ engine turn ──▶ TTS ──▶ browser
@@ -75,7 +75,7 @@ cd frontend && npm ci && npm test && npm run lint
 | `tests/engine` | The turn loop with a scripted fake LLM: tool handling, templates, retries, failures, escalations. Speech by sentence and the fixed-message speech cache, with fake STT and TTS; the claim summary. |
 | `tests/service` | Postgres repository (versioning, concurrent reference numbers), WebSocket protocol, API, Celery tasks, server startup and shutdown. |
 | `tests/e2e` | Recorded Spanish utterances (`tests/e2e/fixtures/audio`) through nginx, STT, LLM and TTS. The final claim is checked. |
-| `evals/` | Seven scenarios where an LLM plays the declarant (happy path, another driver with injuries, a place corrected during the read-back, expired policy, loss before the policy started, insisting on a wrong plate, refusing to give a name). `evals/latency/` measures time to first audio ([docs/LATENCY.md](docs/LATENCY.md)). |
+| `evals/` | Seven scenarios where an LLM plays the declarant (happy path, another driver with injuries, a place corrected during the read-back, expired policy, loss before the policy started, insisting on a wrong plate, refusing to give a name). `evals/latency/` measures the time to first audio of single turns, from recorded utterances. |
 | `frontend` | WAV encoding and Ogg Opus muxing, PCM speech decoding and playback, the WebSocket protocol, access tokens, conversation state, claim stages and value formatting (vitest). |
 
 GitHub Actions runs, for the backend (with a Postgres service), the suppression check, ruff, mypy, the import contracts and the non-e2e tests; for the frontend, lint, tests and the build.
@@ -101,10 +101,19 @@ All three go through OpenRouter, each behind a port:
 
 - Real-time voice: streaming the declarant's speech, a streamed LLM reply and barge-in. Turns are push-to-talk today, and only the reply's speech is streamed.
 - Replicas behind a load balancer; rate limits and quotas per provider; model fallback.
-- More languages; other insurance lines (home).
+- More languages, English first: the prompt, the templates, the spelled-out identifiers and the TTS voice are Spanish today. Other insurance lines (home).
+- Alerts on system failures, escalations and hallucination flags (a periodic task over recent conversations, with thresholds and a webhook).
 - Real identity verification and authentication (staff access to the conversation list, declarants resuming from another device); resuming a conversation after it closes; geocoding the loss location.
-- An offline hallucination judge over Langfuse traces; alerts on failures and on hallucination scores.
+- An offline hallucination judge over Langfuse traces.
+- The rules for conditional fields live in one declarative table: today when a field is required (`Claim.required_fields`) and when it doesn't apply (`_inapplicable_fields`) are written separately. The refusal and escalation thresholds move from the turn loop into the domain.
 - Multi-tenancy.
+
+## Known limitations
+
+- **Spanish only.** Every conversation, test, eval and recording is in Spanish from Spain; another language has never been tried.
+- **A hit-and-run can't be declared.** A collision with another vehicle requires its plate, so "se dio a la fuga, no sé la matrícula", said twice, is taken as a refusal and the claim closes as incomplete. Not knowing a value should not count as refusing it: an unidentified vehicle should require the police report instead.
+- **A request inside a long utterance can go unanswered.** When the declarant gives all the data and asks for something the agent can't do ("¿me lo pone como urgente?") in one breath, the LLM records the data and carries on without answering it.
+- **No rate limits.** Input sizes are capped, but there is no limit per client on connections or turns.
 
 ## Considered and left out
 

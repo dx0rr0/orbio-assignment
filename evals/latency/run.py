@@ -1,5 +1,5 @@
 """Time-to-first-audio eval: each case is one declarant turn through the real WebSocket
-consumer, with the real STT, LLM and TTS on OpenRouter (see docs/LATENCY.md).
+consumer, with the real STT, LLM and TTS on OpenRouter.
 
     uv run --env-file .env --env-file .env.eval python -m evals.latency.run --variant baseline
     uv run ... python -m evals.latency.run --variant v1 --split train
