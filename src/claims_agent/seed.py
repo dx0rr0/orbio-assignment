@@ -2,7 +2,7 @@
 scenarios hold whenever the demo runs.
 
 Policy numbers avoid long runs of the same digit: the STT model drops digits from them
-("AUT-00000001" came back as "AUT0000001" in the spike).
+("AUT-00000001" came back as "AUT0000001" in an early test of the models).
 """
 
 from datetime import date, timedelta

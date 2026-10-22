@@ -1,5 +1,7 @@
 # Implementation plan
 
+> This is the original plan, kept as a record. The system as built is described in the [README](../README.md) and the [ADRs](adr/).
+
 Agreed scope for v0 of the auto claim intake voice agent. Vocabulary follows [GLOSSARY.md](../GLOSSARY.md); architectural decisions are recorded in [docs/adr](adr/).
 
 ## Product
@@ -55,11 +57,11 @@ Agreed scope for v0 of the auto claim intake voice agent. Vocabulary follows [GL
   src/claims_service/  # Django project: settings, ORM repository, ninja API, Channels
                        # consumer, Celery tasks (the ORM repository lives with its models)
   frontend/     # Vite + React + TypeScript
-  tests/{unit,engine,e2e}
+  tests/{unit,engine,service,e2e}
   evals/
   ```
 
-  `domain/` imports nothing from the other packages; `engine/` depends only on `ports/`.
+  `domain/` imports nothing from the other packages; `engine/` depends only on `domain/` and `ports/`.
 - **Stack**
   - Django with async views, django-ninja for HTTP and Channels for WebSocket ([ADR-0004](adr/0004-django-channels-websocket-for-turns.md)).
   - Postgres with `JSONField` ([ADR-0003](adr/0003-postgres-with-django-jsonfield.md)).
@@ -67,9 +69,9 @@ Agreed scope for v0 of the auto claim intake voice agent. Vocabulary follows [GL
   - Everything runs with `docker compose`.
 - **WebSocket protocol**: the client sends `audio` (Ogg Opus encoded in the browser with WebCodecs, or WAV 16 kHz mono where it can't) or `text` (dev mode only in the UI; used by the evals). The server emits `transcript`, `bot_message`, `claim_updated` and `audio`.
 - **Models** (all through OpenRouter, each behind a port):
-  - LLM: `openai/gpt-6-luna` (chat completions with tools).
+  - LLM: `google/gemini-3.1-flash-lite` (chat completions with tools, no reasoning).
   - STT: `microsoft/mai-transcribe-2` (`POST /api/v1/audio/transcriptions`).
-  - TTS: `google/gemini-3.8-flash-lite-tts` (`POST /api/v1/audio/speech`).
+  - TTS: `microsoft/mai-voice-2.1-flash` with the `es-ES-Marta` voice (`POST /api/v1/audio/speech`).
 - **Scalability**: stateless servers (conversation state lives only in the database, load → process → save per turn); async I/O end to end.
 - **Observability**: Langfuse Cloud. Session = conversation, trace = turn, with spans for STT, LLM (as a generation, with tokens and cost through the Langfuse OpenAI wrapper pointed at OpenRouter), validation and TTS. Celery tasks trace into the same session. Structured JSON logs to stdout.
 - **Frontend**: Vite + React + TypeScript. One page with a push-to-talk button, the transcript, bot audio and a live claim panel (each field empty / valid / invalid with its reason, urgency, status). The design will be chosen after comparing prototypes.

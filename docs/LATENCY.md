@@ -1,6 +1,6 @@
 # Latency plan: hill-climbing time to first audio
 
-Agreed on 2026-10-21. One hill-climb over the whole voice turn, following `/claude-api` build-eval and hillclimb.
+Agreed on 2026-10-21. One hill-climb over the whole voice turn: build an eval of single turns, measure a baseline, then try one change per round and keep it only if it improves the metric. The runner is [evals/latency/run.py](../evals/latency/run.py) (cases in [evals/latency/CASES.md](../evals/latency/CASES.md)); each run is written to `evals/latency/results/<variant>/`, which is not committed.
 
 ## Starting point (Langfuse, 38 turns of manual testing)
 

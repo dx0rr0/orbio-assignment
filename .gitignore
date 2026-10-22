@@ -10,7 +10,7 @@ dist/
 # Assignment brief, not ours to publish
 Core Engineer Case.pdf
 
-# Raw recordings (trimmed copies live in tests/e2e/fixtures/audio) and spike scratch
+# Raw recordings (trimmed copies live in tests/e2e/fixtures/audio) and early model tests
 tests-audios/
 spike/
 evals/report.json
@@ -19,6 +19,9 @@ evals/report.json
 .design-prototypes/
 .env.eval
 
-# Claude Code worktrees and hill-climb runs; raw eval recordings (16 kHz copies live in evals/latency/audio)
+# Local agent worktrees and settings; raw eval recordings (16 kHz copies live in evals/latency/audio)
 .claude/
 hillclimb-audios/
+
+# Latency eval runs (evals/latency/run.py)
+evals/latency/results/

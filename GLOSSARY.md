@@ -53,7 +53,7 @@ The person driving the insured vehicle when the loss happened. May be neither th
 ### Lifecycle
 
 **Read-back** (*Lectura de la declaración*):
-The short summary of the loss the agent says once the claim is complete (what, when and where, injuries and damage, the other vehicle or the police report), so the declarant can confirm or correct the claim. Identifiers checked against the policy and the declarant's own words are left out; the whole claim is on screen. It is always written by code, never by the LLM. After a correction, only the changed values are said.
+The short summary of the loss the agent says once the claim is complete (what, when and where, injuries and whether the vehicle can be driven, the other vehicle or the police report), so the declarant can confirm or correct the claim. Identifiers checked against the policy and the declarant's own words are left out; the whole claim is on screen. It is always written by code, never by the LLM. After a correction, only the changed values are said.
 
 **Reference** (*Referencia*):
 Identifier of a confirmed claim, `SIN-<year>-<6-digit sequence>`, read aloud to the declarant.
