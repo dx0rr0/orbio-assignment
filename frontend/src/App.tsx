@@ -19,10 +19,18 @@ export default function App() {
   const [recording, setRecording] = useState(false)
   const [output] = useState(() => new WebAudioOutput())
   const [player] = useState(() => new SpeechPlayer(output, setSpeaking))
+  // A new call starts on a click, which lets the browser play the greeting; watching an
+  // existing conversation starts at once.
+  const [started, setStarted] = useState(resumeId !== null)
+
+  const startCall = useCallback(() => {
+    // Without audio the call still works: the text is on screen.
+    void output.unlock().finally(() => setStarted(true))
+  }, [output])
 
   // Called on the declarant's gestures, which also let the browser play audio from then on.
   const stopSpeaking = useCallback(() => {
-    output.unlock()
+    void output.unlock()
     player.stop()
   }, [output, player])
 
@@ -33,7 +41,7 @@ export default function App() {
     [player],
   )
 
-  const { state, sendAudio, sendText } = useConversation(resumeId, playAudio)
+  const { state, sendAudio, sendText } = useConversation(resumeId, started, playAudio)
   const [micError, setMicError] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
 
@@ -53,6 +61,7 @@ export default function App() {
       <main className="call">
         <CallHeader
           connected={connected}
+          idle={state.connection === 'idle'}
           ended={closed || state.connection === 'closed'}
           startedAt={state.startedAt}
           activity={activity}
@@ -63,7 +72,11 @@ export default function App() {
         {(state.error || micError) && <p className="error">{state.error ?? micError}</p>}
 
         <footer className="controls">
-          {closed ? (
+          {!started ? (
+            <button type="button" className="start-call" onClick={startCall}>
+              Iniciar llamada
+            </button>
+          ) : closed ? (
             <a className="restart" href={window.location.pathname}>
               Nueva declaración
             </a>

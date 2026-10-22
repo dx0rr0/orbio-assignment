@@ -23,11 +23,13 @@ function useElapsed(startedAt: number | null, running: boolean): string | null {
 
 /** "Call in progress" bar: connection, elapsed time and what the agent is doing. */
 export function CallHeader({
+  idle,
   connected,
   ended,
   startedAt,
   activity,
 }: {
+  idle: boolean
   connected: boolean
   ended: boolean
   startedAt: number | null
@@ -35,7 +37,13 @@ export function CallHeader({
 }) {
   const live = connected && !ended
   const elapsed = useElapsed(startedAt, live)
-  const title = ended ? 'Llamada finalizada' : connected ? 'Llamada en curso' : 'Conectando…'
+  const title = idle
+    ? 'Llamada no iniciada'
+    : ended
+      ? 'Llamada finalizada'
+      : connected
+        ? 'Llamada en curso'
+        : 'Conectando…'
 
   return (
     <header className="call-header">

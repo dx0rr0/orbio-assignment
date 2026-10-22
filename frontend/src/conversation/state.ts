@@ -1,6 +1,7 @@
 import type { ClaimView, ServerEvent, Summary, TranscriptEntry } from './protocol'
 
-export type Connection = 'connecting' | 'open' | 'closed'
+// 'idle' until the declarant starts the call.
+export type Connection = 'idle' | 'connecting' | 'open' | 'closed'
 
 export interface ConversationState {
   connection: Connection
@@ -21,7 +22,7 @@ export type Action =
   | { type: 'server'; event: ServerEvent }
 
 export const initialState: ConversationState = {
-  connection: 'connecting',
+  connection: 'idle',
   conversationId: null,
   startedAt: null,
   transcript: [],

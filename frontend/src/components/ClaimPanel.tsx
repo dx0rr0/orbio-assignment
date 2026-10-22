@@ -11,7 +11,7 @@ export function ClaimPanel({ claim, summary }: { claim: ClaimView | null; summar
   if (claim === null) {
     return (
       <aside className="panel">
-        <p className="panel-muted">Conectando…</p>
+        <p className="panel-muted">Aquí verá los datos de su declaración.</p>
       </aside>
     )
   }

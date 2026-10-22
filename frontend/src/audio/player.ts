@@ -72,9 +72,10 @@ export class SpeechPlayer {
 export class WebAudioOutput implements AudioOutput {
   private readonly context = new AudioContext()
 
-  /** Lets the context play after the browser blocked autoplay; call it on a user gesture. */
-  unlock(): void {
-    if (this.context.state !== 'running') void this.context.resume()
+  /** Lets the context play after the browser blocked autoplay; call it on a user gesture.
+   * Resolves once it can play. */
+  unlock(): Promise<void> {
+    return this.context.state === 'running' ? Promise.resolve() : this.context.resume()
   }
 
   now(): number {

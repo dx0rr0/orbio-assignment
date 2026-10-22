@@ -8,8 +8,13 @@ import { initialState, reducer } from './state'
 
 const session = () => window.sessionStorage
 
-/** One conversation over WebSocket. `resumeId` watches an existing one instead of starting. */
-export function useConversation(resumeId: string | null, playAudio: (piece: SpeechPiece, startsReply: boolean) => void) {
+/** One conversation over WebSocket, connected once `started`. `resumeId` watches an existing
+ * one instead of starting. */
+export function useConversation(
+  resumeId: string | null,
+  started: boolean,
+  playAudio: (piece: SpeechPiece, startsReply: boolean) => void,
+) {
   const [state, dispatch] = useReducer(reducer, initialState)
   const socket = useRef<WebSocket | null>(null)
   // Kept in a ref so that a new callback doesn't reconnect the socket.
@@ -19,6 +24,8 @@ export function useConversation(resumeId: string | null, playAudio: (piece: Spee
   }, [playAudio])
 
   useEffect(() => {
+    if (!started) return
+    dispatch({ type: 'connection', connection: 'connecting' })
     const ws = new WebSocket(socketUrl(window.location, resumeId))
     socket.current = ws
     ws.onopen = () => {
@@ -45,7 +52,7 @@ export function useConversation(resumeId: string | null, playAudio: (piece: Spee
       dispatch({ type: 'server', event })
     }
     return () => ws.close()
-  }, [resumeId])
+  }, [resumeId, started])
 
   const send = useCallback((message: ClientMessage) => {
     if (socket.current?.readyState !== WebSocket.OPEN) return

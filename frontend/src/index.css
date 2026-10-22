@@ -275,6 +275,22 @@ body {
   font-weight: 700;
 }
 
+.start-call {
+  padding: 16px 36px;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.start-call:focus-visible {
+  outline: 3px solid var(--accent-text);
+  outline-offset: 4px;
+}
+
 .dev-input {
   width: 100%;
 }
